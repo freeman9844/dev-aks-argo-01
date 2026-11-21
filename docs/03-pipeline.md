@@ -61,8 +61,10 @@ az deployment group show -g $rg -n demo-infra --query properties.outputs.ciIdent
 
 ```powershell
 $ciId = az deployment group show -g $rg -n demo-infra --query properties.outputs.ciIdentityName.value -o tsv
-az identity federated-credential list -g $rg --identity-name $ciId --query "length(@)"
+@(az identity federated-credential list -g $rg --identity-name $ciId -o json | ConvertFrom-Json).Count
 ```
+
+> 💡 Windows의 `az`는 `az.cmd` 배치 파일이라서 `--query "length(@)"`처럼 괄호가 든 인자는 `cmd`가 잘라 `invalid jmespath_type value: 'length(@'` 오류가 납니다. 그래서 개수는 PowerShell에서 셉니다.
 
 ⚠️ **주의** — Save하면 Azure DevOps가 Step 2에서 고른 범위(여기서는 `$rg`)에 **Contributor 역할을 관리 ID에 자동으로 부여**합니다. 리소스 그룹을 비워 두면 범위가 구독 전체로 넓어지므로 반드시 `$rg`를 고릅니다. 파이프라인에 필요한 권한은 Bicep이 준 ACR 범위 `AcrPush` 하나뿐이므로, 자동으로 붙은 Contributor는 바로 제거합니다.
 
