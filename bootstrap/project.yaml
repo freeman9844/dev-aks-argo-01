@@ -1,0 +1,16 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: demo
+  namespace: argocd
+spec:
+  sourceRepos:
+    - 'GITOPS_REPO_URL'
+  destinations:
+    - namespace: demo
+      server: https://kubernetes.default.svc
+  namespaceResourceWhitelist:
+    - group: argoproj.io
+      kind: Rollout
+    - group: ''
+      kind: Service

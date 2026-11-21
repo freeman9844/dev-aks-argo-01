@@ -1,0 +1,69 @@
+trigger:
+  batch: true
+  branches:
+    include: [main]
+
+resources:
+  repositories:
+    - repository: desired
+      type: git
+      name: demo-gitops
+      ref: refs/heads/demo
+      trigger: none
+
+pool:
+  vmImage: ubuntu-24.04
+
+jobs:
+  - job: Build
+    steps:
+      - checkout: self
+      - bash: python3 -m unittest discover -s tests -v
+        displayName: Test app and GitOps renderer
+      - task: AzureCLI@2
+        name: publish
+        condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+        inputs:
+          azureSubscription: demo-acr-push
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -euo pipefail
+            az acr login --name "$ACR_NAME"
+            tag="$BUILD_SOURCEVERSION-$BUILD_BUILDID"
+            image="$ACR_LOGIN_SERVER/demo-app:$tag"
+            docker build --build-arg SOURCE_COMMIT="$BUILD_SOURCEVERSION" -t "$image" .
+            docker push "$image"
+            digest=$(az acr repository show -n "$ACR_NAME" --image "demo-app:$tag" --query digest -o tsv)
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            echo "$BUILD_SOURCEVERSION -> $image -> $digest"
+            echo "##vso[task.setvariable variable=digest;isOutput=true]$digest"
+        env:
+          ACR_NAME: $(acrName)
+          ACR_LOGIN_SERVER: $(acrLoginServer)
+
+  - job: UpdateGit
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      digest: $[ dependencies.Build.outputs['publish.digest'] ]
+    steps:
+      - checkout: self
+        path: s/app
+      - checkout: desired
+        path: s/desired
+        persistCredentials: true
+      - bash: |
+          set -euo pipefail
+          python3 ../app/ci/release.py dev "$ACR_LOGIN_SERVER/demo-app" "$DIGEST"
+          kubectl kustomize dev > "$AGENT_TEMPDIRECTORY/rendered.yaml"
+          grep -Fq "image: $ACR_LOGIN_SERVER/demo-app@$DIGEST" "$AGENT_TEMPDIRECTORY/rendered.yaml"
+          git add -- dev/kustomization.yaml
+          if ! git diff --cached --quiet; then
+            git -c user.name='Demo release CI' -c user.email='ci@example.invalid' commit -m "Deploy $BUILD_SOURCEVERSION at $DIGEST"
+          fi
+          git push origin HEAD:refs/heads/demo
+        workingDirectory: $(Pipeline.Workspace)/s/desired
+        env:
+          ACR_LOGIN_SERVER: $(acrLoginServer)
+          DIGEST: $(digest)
