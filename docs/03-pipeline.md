@@ -19,6 +19,10 @@ git push $appUrl HEAD:refs/heads/main
 
 📋 **확인** — 브라우저에서 `demo-app`의 **main** 브랜치를 열면 루트에 `azure-pipelines.yml`, `app/`, `chart/`, `ci/`가 보여야 합니다. `chart/demo-app/values.yaml`의 이미지 주소가 `example.invalid`인 것은 정상입니다. 파이프라인이 빌드할 때마다 실제 ACR 주소와 digest로 바꿔 차트를 만듭니다.
 
+![push를 마친 demo-app 저장소](images/03-devops-repo.png)
+
+*그림: main 브랜치 루트에 `app/`, `chart/`, `ci/`, `azure-pipelines.yml`이 보이는 상태*
+
 ## 2. ACR 서비스 연결
 
 👁️ **설명** — 파이프라인이 ACR에 이미지와 차트를 push할 때 쓰는 ID입니다. 02에서 Bicep이 만든 관리 ID `id-ci-<AKS 이름>`이 **이 ACR 하나에 대해서만 `AcrPush`**를 가지고 있습니다. 서비스 연결을 **Managed identity** 방식으로 만들면 Azure DevOps가 이 ID에 페더레이션 자격 증명을 자동으로 추가합니다. 비밀번호도 앱 등록도 필요 없습니다. Argo CD를 부르는 `ci` 토큰과는 별개이므로, 이미지 push가 실패하면 이 연결을, Sync 요청이 실패하면 `ci` 토큰을 봅니다.
@@ -36,14 +40,18 @@ az deployment group show -g $rg -n demo-infra --query properties.outputs.ciIdent
 
 | 구역 | 항목 | 값 |
 |---|---|---|
-| Step 1: Managed identity details | Subscription for Managed Identity | 실습 구독 |
-| Step 1 | Resource group for Managed Identity | 02의 `$rg` |
+| Step 1: Managed Identity details | Subscription for managed identity | 실습 구독 |
+| Step 1 | Resource group for managed identity | 02의 `$rg` |
 | Step 1 | Managed Identity | 위에서 확인한 `id-ci-<AKS 이름>` |
-| Step 2: Azure Scope | Scope Level | `Subscription` |
+| Step 2: Azure scope | Scope level for service connection | `Subscription` |
 | Step 2 | Subscription for service connection | 실습 구독 |
-| Step 2 | Resource group for service connection | 02의 `$rg` |
+| Step 2 | Resource group for Service connection (optional) | 02의 `$rg` — 비워 두지 않습니다(아래 주의 참고). |
 | Step 3: Service connection details | Service Connection Name | `demo-acr-push` — YAML의 `azureSubscription: demo-acr-push`와 같아야 합니다. |
 | Security | Grant access permission to all pipelines | **체크하지 않습니다.** 4절 첫 실행 때 이 파이프라인만 승인합니다. |
+
+![입력을 마친 Managed identity 서비스 연결 화면](images/03-devops-service-connection.png)
+
+*그림: 관리 ID, 범위(`$rg`), 이름 `demo-acr-push`를 입력하고 Grant access는 체크하지 않은 상태*
 
 3. **Save**를 누릅니다.
 
@@ -54,7 +62,17 @@ $ciId = az deployment group show -g $rg -n demo-infra --query properties.outputs
 az identity federated-credential list -g $rg --identity-name $ciId --query "length(@)"
 ```
 
-⚠️ **주의** — 연결 화면의 범위(리소스 그룹)는 *어디를 대상으로 하는 연결인지*를 적는 값일 뿐 권한을 주지 않습니다. 실제 권한은 Bicep이 준 ACR 범위 `AcrPush` 하나뿐입니다. 구독 Contributor 같은 넓은 역할을 추가하지 마세요.
+⚠️ **주의** — Save하면 Azure DevOps가 Step 2에서 고른 범위(여기서는 `$rg`)에 **Contributor 역할을 관리 ID에 자동으로 부여**합니다. 리소스 그룹을 비워 두면 범위가 구독 전체로 넓어지므로 반드시 `$rg`를 고릅니다. 파이프라인에 필요한 권한은 Bicep이 준 ACR 범위 `AcrPush` 하나뿐이므로, 자동으로 붙은 Contributor는 바로 제거합니다.
+
+🟢 **실행 · 참가자 PC / PowerShell**
+
+```powershell
+$ciPrincipal = az identity show -g $rg -n $ciId --query principalId -o tsv
+az role assignment delete --assignee $ciPrincipal --role Contributor --resource-group $rg
+az role assignment list --assignee $ciPrincipal --all --query "[].roleDefinitionName" -o tsv
+```
+
+📋 **확인** — 마지막 명령의 출력이 `AcrPush` 한 줄입니다.
 
 ## 3. Argo CD에서 `ci` 토큰 만들기
 
@@ -63,15 +81,21 @@ az identity federated-credential list -g $rg --identity-name $ciId --query "leng
 🟢 **실행 · 브라우저 / Argo CD UI**
 
 1. 02에서 연 Argo CD에서 **Settings → Accounts → ci**를 선택합니다.
-2. **Tokens** 영역의 **GENERATE NEW**를 누르고 **Expires In**에 실습 기간(예: `7d`)을 입력한 뒤 생성합니다.
-3. 나타난 토큰을 복사해 다음 절의 `argocdToken` 변수에 바로 붙여 넣습니다. 메모장, 채팅, 스크린샷에 남기지 않습니다.
+2. **Tokens** 영역의 **Expires In**에 실습 기간(예: `7d`)을 입력하고(Token ID는 비워 둡니다) **Generate New**를 누릅니다. "Are you sure you want to generate a new token?" 확인 창에서 **OK**를 누릅니다.
+3. **New Token:** 아래에 나타난 토큰을 복사해 다음 절의 `argocdToken` 변수에 바로 붙여 넣습니다. 메모장, 채팅, 스크린샷에 남기지 않습니다.
+
+📋 **확인** — 토큰 목록에 새 ID가 생기고 **EXPIRES AT**이 `in 7 days`입니다.
+
+![ci 계정 토큰 생성 직후 화면](images/03-argocd-ci-token.png)
+
+*그림: New Token 영역(교재 캡처에서는 값을 가렸습니다)과 7일 뒤 만료되는 토큰 목록*
 
 ## 4. 파이프라인 등록과 첫 실행
 
 🟢 **실행 · 브라우저 / Pipelines → New pipeline**
 
-1. **Pipelines → New pipeline**(첫 파이프라인이면 **Create Pipeline**)에서 **Azure Repos Git → demo-app → Existing Azure Pipelines YAML file**을 선택합니다. 브랜치 `main`, 경로 `/azure-pipelines.yml`로 **Continue**합니다.
-2. 검토 화면의 **Variables → New variable**에서 아래 네 개를 추가합니다.
+1. **Pipelines → New pipeline**(첫 파이프라인이면 **Create Pipeline**)에서 **Azure Repos Git → demo-app**을 선택합니다. 저장소 루트에 `azure-pipelines.yml`이 있으므로 Configure 단계를 건너뛰고 바로 **Review your pipeline YAML** 화면이 열립니다. (Configure 화면이 나오면 **Existing Azure Pipelines YAML file**에서 브랜치 `main`, 경로 `/azure-pipelines.yml`을 고르고 **Continue**합니다.)
+2. 검토 화면 오른쪽 위의 **Variables → New variable**에서 아래 네 개를 하나씩 추가합니다. 두 번째부터는 Variables 패널의 **+** 버튼을 누릅니다.
 
 | 이름 | 값 | 비밀 여부 |
 |---|---|---|
@@ -80,7 +104,16 @@ az identity federated-credential list -g $rg --identity-name $ciId --query "leng
 | `argocdServer` | 02의 `$argocdServer` (IP만, `https://` 없이) | 아니요 |
 | `argocdToken` | 3절에서 만든 토큰 | **Keep this value secret** 체크 |
 
-3. **Save → Run**으로 실행합니다. 리소스 승인 요청이 뜨면 연결·저장소가 실습 대상인지 확인한 뒤 해당 파이프라인만 승인하세요.
+![Variables 패널에 네 변수를 추가한 화면](images/03-devops-variables.png)
+
+*그림: `argocdToken`은 자물쇠 아이콘과 `****`로 표시됩니다. 패널 아래쪽 **Save**를 눌러야 반영됩니다.*
+
+3. Variables 패널의 **Save**를 누른 뒤 검토 화면의 **Run**을 누릅니다. 파이프라인 이름은 저장소 이름과 같은 `demo-app`으로 자동 지정됩니다.
+4. 실행 화면에 "This pipeline needs permission to access a resource before this run can continue"가 뜨면 **View**를 누릅니다. 대상이 Service connection `demo-acr-push`인지 확인하고 **Permit → Permit**으로 이 파이프라인만 승인합니다.
+
+![서비스 연결 사용 승인 요청](images/03-devops-permit.png)
+
+*그림: 첫 실행에서 한 번만 나오는 승인 요청. 이후 실행에는 묻지 않습니다.*
 
 👁️ **설명 · 두 Job이 하는 일** — [`azure-pipelines.yml`](../azure-pipelines.yml)은 두 Job으로 나뉩니다.
 
@@ -95,9 +128,13 @@ az identity federated-credential list -g $rg --identity-name $ciId --query "leng
 Argo CD Application demo-app이 아직 없습니다. 04 단계에서 Application을 만든 뒤 파이프라인을 다시 실행하세요. (차트 1.0.<빌드 ID> 은 ACR에 푸시됨)
 ```
 
-Application은 04에서 UI로 만듭니다. 그 전까지 파이프라인은 ACR에 차트만 올리고 배포는 하지 않습니다. 같은 로그 위쪽의 `Username: ci`는 토큰과 주소가 맞다는 뜻입니다.
+Application은 04에서 UI로 만듭니다. 그 전까지 파이프라인은 ACR에 차트만 올리고 배포는 하지 않습니다. **Deploy → Request Argo CD sync** 로그 위쪽의 `Username: ci`는 토큰과 주소가 맞다는 뜻입니다.
 
-**Jobs → Build → Push image and Helm chart to ACR** 로그에서 아래 두 줄을 찾아 값을 기록합니다.
+![첫 실행 요약: 두 Job 성공, 경고 1건](images/03-devops-first-run.png)
+
+*그림: Warnings 1건이 Deploy • Request Argo CD sync에서 나온 안내 메시지입니다.*
+
+**Jobs → Build → Push image and Helm chart to ACR** 로그에서 아래 두 줄을 찾아 값을 기록합니다. 같은 로그의 `WARNING: Note: The token in both the accessToken and refreshToken fields is an ACR Refresh Token…`은 Helm 로그인용 토큰을 받을 때 항상 나오는 안내이므로 무시합니다.
 
 ```text
 <앱 커밋 SHA> -> <ACR>/demo-app:<태그> -> sha256:<digest>
