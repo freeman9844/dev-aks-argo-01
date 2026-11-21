@@ -13,7 +13,7 @@ git clone https://github.com/freeman9844/dev-aks-argo-01.git
 Set-Location dev-aks-argo-01
 Get-Command az, git, kubectl, helm
 az bicep version
-kubectl argo rollouts version --client
+kubectl argo rollouts version --short
 az account show --query "{subscription:name, state:state}" -o table
 ```
 
