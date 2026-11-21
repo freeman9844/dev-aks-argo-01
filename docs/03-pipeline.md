@@ -1,82 +1,105 @@
-# 03. Azure Repos와 이미지 빌드
+# 03. Azure Repos와 CI 연결
 
-**목표:** v1을 빌드하고 ACR에 푸시한 뒤 **동일한 digest**를 별도 GitOps 저장소에 남깁니다.
+**목표:** `demo-app` 저장소와 파이프라인을 만들고, 첫 실행으로 v1 이미지와 Helm 차트를 ACR에 올립니다. 파이프라인에는 Argo CD에 Sync를 요청할 `ci` 토큰을 비밀 변수로 넣습니다.
 
-## 1. 두 저장소 준비
+## 1. 앱 저장소 준비
 
-👁️ **설명** — `demo-app`에는 *이미지를 만드는 재료*가, `demo-gitops`에는 *AKS가 실행할 이미지 주소*가 들어갑니다. 배포용 저장소에 앱 소스 전체를 넣으면 Argo CD가 읽을 `dev` 경로가 맞지 않습니다.
+👁️ **설명** — 이번 단계에서 Git 저장소는 **앱 소스용 `demo-app` 하나**뿐입니다. 배포 명세(차트)는 파이프라인이 빌드마다 만들어 ACR에 올리므로 별도 배포용 저장소가 필요하지 않습니다.
 
 🟢 **실행 · 브라우저 / Azure DevOps → Repos**, 이후 **PC / PowerShell**
 
-1. 비공개 실습 프로젝트에서 **Repos → Files → 상단 저장소 이름 ▼ → New repository**를 엽니다. 유형 **Git**, 이름 `demo-app`, **Add a README** 해제 후 **Create**를 선택합니다. `demo-gitops`도 같은 방법으로 만듭니다.
-2. 각 저장소에서 **Clone → HTTPS** 주소를 복사합니다. 두 주소의 마지막 경로가 각각 `/_git/demo-app`, `/_git/demo-gitops`인지 확인하세요. 같은 URL을 두 번 사용하면 앱 소스와 배포 명세가 한 저장소에 들어갑니다.
-3. PC로 돌아와 다음을 실행합니다. 아래 명령은 로컬 원격 설정을 변경하지 않으며 새 저장소에만 실행합니다.
+1. 비공개 실습 프로젝트에서 **Repos → Files → 상단 저장소 이름 ▼ → New repository**를 엽니다. 유형 **Git**, 이름 `demo-app`, **Add a README** 해제 후 **Create**를 선택합니다.
+2. **Clone → HTTPS** 주소를 복사합니다. 마지막 경로가 `/_git/demo-app`인지 확인하세요.
+3. PC로 돌아와 다음을 실행합니다. 로컬 원격 설정은 바꾸지 않고 새 저장소에만 push합니다.
 
 ```powershell
 $appUrl = Read-Host 'demo-app HTTPS URL'
-$repo = Read-Host 'demo-gitops HTTPS URL'
 git push $appUrl HEAD:refs/heads/main
-$tree = git rev-parse HEAD:gitops-seed
-$seed = git commit-tree $tree -m "Initialize workshop GitOps state"
-git push $repo "${seed}:refs/heads/demo"
 ```
 
-GitOps 저장소 루트에는 `dev/kustomization.yaml`이 보여야 합니다. seed는 처음 한 번만 게시합니다.
+📋 **확인** — 브라우저에서 `demo-app`의 **main** 브랜치를 열면 루트에 `azure-pipelines.yml`, `app/`, `chart/`, `ci/`가 보여야 합니다. `chart/demo-app/values.yaml`의 이미지 주소가 `example.invalid`인 것은 정상입니다. 파이프라인이 빌드할 때마다 실제 ACR 주소와 digest로 바꿔 차트를 만듭니다.
 
-📋 **확인** — 브라우저의 브랜치 선택기를 확인하세요. 앱 쪽은 **main → `azure-pipelines.yml`**, GitOps 쪽은 **demo → `dev/kustomization.yaml`**이 보여야 합니다. 지금은 이미지 이름이 `example.invalid`인 것이 정상입니다. 첫 CI가 이 값을 교체합니다.
+## 2. ACR 서비스 연결
 
-![Azure Repos의 demo-app 저장소 main 브랜치 파일 목록: 루트에 azure-pipelines.yml과 앱 소스가 있음](images/03-devops-repo-app.png)
-
-*03·06의 Azure DevOps 그림은 실습을 마친 실제 프로젝트에 Playwright로 접속해 촬영했습니다. 따라서 파이프라인에 **Disabled** 배지가 보이고, GitOps 파일에는 이미 실제 digest가 들어 있습니다. 조직·사용자 이름과 GUID는 `contoso` 계열 값으로 바꾸거나 가렸습니다.*
-
-## 2. CI 권한 구성
-
-👁️ **설명** — 한 번의 빌드에 두 ID가 쓰입니다. ACR에 쓰는 ID는 **서비스 연결**의 ID이고, Git에 쓰는 ID는 **프로젝트 Build Service**입니다. 이미지 푸시가 성공하고 Git 푸시만 실패했다면 ACR 권한을 넓혀도 해결되지 않습니다.
+👁️ **설명** — 파이프라인이 ACR에 이미지와 차트를 push할 때 쓰는 ID입니다. Argo CD를 부르는 `ci` 토큰과는 별개입니다. 이미지 push가 실패하면 이 연결을, Sync 요청이 실패하면 `ci` 토큰을 봅니다.
 
 🟢 **실행 · 브라우저 / Project settings**
 
 | 대상 | 설정 |
 |---|---|
-| Service connections | Azure Resource Manager 연결 `demo-acr-push`: Workload identity federation으로 인증하고 해당 ID에 **실습 ACR의 AcrPush만** 부여합니다. 구독 Contributor는 필요 없습니다. |
-| Repos → `demo-gitops` → Branches → `demo` → Branch security | `<프로젝트> Build Service (<조직>)`에 Read와 Contribute를 허용합니다. Force push와 정책 우회는 허용하지 않습니다. ID가 없다면 첫 실행 후 다시 조회합니다. |
-| Pipelines 설정 | job authorization을 현재 프로젝트와 명시적으로 참조한 저장소로 제한합니다. 실습 운영자만 파이프라인을 편집·실행하도록 하고 보호된 리소스 사용 승인은 해당 파이프라인에만 부여합니다. |
+| Service connections | Azure Resource Manager 연결 `demo-acr-push`: Workload identity federation으로 인증하고 해당 ID에 **실습 ACR의 AcrPush만** 부여합니다. 구독 Contributor는 필요 없습니다. 이름은 YAML의 `azureSubscription: demo-acr-push`와 같아야 합니다. |
+| Pipelines 설정 | job authorization을 현재 프로젝트로 제한합니다. 실습 운영자만 파이프라인을 편집·실행하도록 하고, 보호된 리소스 사용 승인은 해당 파이프라인에만 부여합니다. |
 
-Branch security는 **Repos → Branches**에서 `demo-gitops`를 고른 뒤 `demo` 행의 **⋯ → Branch security**로 엽니다. 왼쪽 **Users**에서 Build Service ID를 선택하면 오른쪽에 권한이 나옵니다.
+## 3. Argo CD에서 `ci` 토큰 만들기
 
-![demo-gitops의 demo 브랜치 보안 패널: Build Service ID의 Contribute는 Allow이고 Force push와 정책 우회는 Not set](images/03-devops-branch-security.png)
+👁️ **설명** — 파이프라인은 admin 계정을 쓰지 않습니다. 02에서 Bicep이 만든 전용 계정 `ci`는 `demo` 프로젝트의 `demo-app` 하나에 대해 **조회, 차트 버전 변경, Sync**만 할 수 있습니다. 삭제나 다른 앱 조작은 거부됩니다. 토큰은 만들 때 **한 번만** 보이므로 바로 파이프라인 비밀 변수에 붙여 넣습니다.
 
-Contribute가 `Allow (inherited)`가 아니라 **`Allow`** 로 보여야 이 브랜치에 명시적으로 부여한 것입니다. Force push와 Bypass policies는 `Not set`으로 남겨 둡니다.
+🟢 **실행 · 브라우저 / Argo CD UI**
 
-## 3. 실행하고 digest 비교
+1. 02에서 연 Argo CD에서 **Settings → Accounts → ci**를 선택합니다.
+2. **Tokens** 영역의 **GENERATE NEW**를 누르고 **Expires In**에 실습 기간(예: `7d`)을 입력한 뒤 생성합니다.
+3. 나타난 토큰을 복사해 다음 절의 `argocdToken` 변수에 바로 붙여 넣습니다. 메모장, 채팅, 스크린샷에 남기지 않습니다.
+
+## 4. 파이프라인 등록과 첫 실행
 
 🟢 **실행 · 브라우저 / Pipelines → New pipeline**
 
 1. **Pipelines → New pipeline**(첫 파이프라인이면 **Create Pipeline**)에서 **Azure Repos Git → demo-app → Existing Azure Pipelines YAML file**을 선택합니다. 브랜치 `main`, 경로 `/azure-pipelines.yml`로 **Continue**합니다.
-2. 검토 화면의 **Variables → New variable**에서 `acrName`과 `acrLoginServer`를 하나씩 추가합니다. 값은 각각 02의 `$acr`, `$loginServer` 출력이며, 로그인 서버에는 `https://`를 붙이지 않습니다. **Save → Run**으로 실행합니다. 리소스 승인 요청이 뜨면 연결·저장소가 실습 대상인지 확인한 뒤 해당 파이프라인만 승인하세요.
-3. **Pipelines → 해당 실행 → Jobs → Build → publish**에서 `sha256:` 값을 복사합니다. **UpdateGit**도 성공했는지 확인하세요. `Build`만 성공했다면 이미지는 있지만 Git에는 아직 배포 결정이 기록되지 않았을 수 있습니다.
+2. 검토 화면의 **Variables → New variable**에서 아래 네 개를 추가합니다.
 
-**예상 결과:** `Build`의 `publish` 로그에 SHA·태그·digest가 보이고, `UpdateGit`이 성공합니다. `demo-gitops:demo`의 `dev/kustomization.yaml`에서 `images[0].digest`가 로그와 같은지 확인합니다. 이 시점에는 **아직 앱이 배포되지 않았습니다.**
+| 이름 | 값 | 비밀 여부 |
+|---|---|---|
+| `acrName` | 02의 `$acr` | 아니요 |
+| `acrLoginServer` | 02의 `$loginServer` (`https://` 없이) | 아니요 |
+| `argocdServer` | 02의 `$argocdServer` (IP만, `https://` 없이) | 아니요 |
+| `argocdToken` | 3절에서 만든 토큰 | **Keep this value secret** 체크 |
 
-![demo-release 실행 목록: 성공 3건과 실패 2건, 실행마다 트리거 종류와 커밋 SHA 표시](images/03-devops-pipeline-runs.png)
+3. **Save → Run**으로 실행합니다. 리소스 승인 요청이 뜨면 연결·저장소가 실습 대상인지 확인한 뒤 해당 파이프라인만 승인하세요.
 
-실행 목록의 실패 2건은 실습 중 실제로 만난 오류입니다. `#20261121.1`은 Build Service 권한 누락(`TF401027`)이고, `#20261121.3`은 같은 커밋으로 수동 실행과 자동 실행(Batched CI)이 겹친 경우입니다. 둘 다 아래 트러블슈팅에서 다룹니다.
+👁️ **설명 · 두 Job이 하는 일** — [`azure-pipelines.yml`](../azure-pipelines.yml)은 두 Job으로 나뉩니다.
 
-![실행 #20261121.5 요약: Build와 UpdateGit 두 Job이 모두 성공](images/03-devops-run-summary.png)
+| Job | 하는 일 | 결과물 |
+|---|---|---|
+| `Build` | 단위 테스트 → 이미지 빌드·push → digest를 values에 고정 → 차트 `1.0.<빌드 ID>` 패키징·push | ACR의 `demo-app` 이미지, `helm/demo-app` 차트 |
+| `Deploy` | Argo CD 서버에서 같은 버전 CLI를 내려받아 `ci` 토큰으로 로그인 확인 → Application이 있으면 차트 버전 지정 → Sync 요청 → Sync 완료 대기 | Argo CD History의 새 항목 |
 
-![Build Job의 publish 로그: 커밋 SHA, 이미지 태그와 함께 sha256 digest가 출력됨](images/03-devops-publish-log.png)
+📋 **확인 · 첫 실행 결과** — 두 Job 모두 성공하지만 `Deploy`에는 **경고 1건**이 있어야 정상입니다.
 
-📋 **확인 · 같은 이미지인가요?** `Repos → Files → demo-gitops → demo`에서 `dev/kustomization.yaml`의 `newName`과 `digest`를 확인하세요. 아래 명령은 *실제 ACR에 게시된* digest 목록을 반환합니다. 파일의 값이 이 목록에 있어야 합니다.
+```text
+Argo CD Application demo-app이 아직 없습니다. 04 단계에서 Application을 만든 뒤 파이프라인을 다시 실행하세요. (차트 1.0.<빌드 ID> 은 ACR에 푸시됨)
+```
 
-![demo-gitops demo 브랜치의 dev/kustomization.yaml: newName은 실습 ACR의 demo-app, digest는 publish 로그와 같은 sha256 값](images/03-devops-gitops-kustomization.png)
+Application은 04에서 UI로 만듭니다. 그 전까지 파이프라인은 ACR에 차트만 올리고 배포는 하지 않습니다. 같은 로그 위쪽의 `Username: ci`는 토큰과 주소가 맞다는 뜻입니다.
 
-위 두 그림의 digest는 모두 `sha256:e9e51f…`로 시작합니다. 파이프라인이 ACR에 올린 이미지와 정확히 같은 digest를 Git에 기록했다는 뜻입니다.
+**Jobs → Build → Push image and Helm chart to ACR** 로그에서 아래 두 줄을 찾아 값을 기록합니다.
+
+```text
+<앱 커밋 SHA> -> <ACR>/demo-app:<태그> -> sha256:<digest>
+chart: oci://<ACR>/helm/demo-app:1.0.<빌드 ID>
+```
+
+PC에서도 ACR에 실제로 올라갔는지 확인합니다.
 
 ```powershell
 az acr manifest list-metadata -r $acr -n demo-app --query "[].digest" -o tsv
+az acr repository show-tags -n $acr --repository helm/demo-app -o tsv
 ```
 
-**트러블슈팅:** `TF401027 GenericContribute`는 ACR 문제가 아닙니다. 오류의 빌드 ID와 GitOps `demo` 브랜치 권한을 확인합니다. `non-fast-forward`라면 같은 커밋의 수동·자동 실행이 경합했는지 확인하고 강제 푸시는 하지 않습니다.
+첫 출력에 로그의 digest가, 두 번째 출력에 로그의 차트 버전이 있어야 합니다.
 
-**완료 체크:** 이미지 digest와 대응하는 GitOps 커밋을 기록했습니다.
+**트러블슈팅**
+
+| 증상 | 원인과 조치 |
+|---|---|
+| `Build`의 push에서 `unauthorized` | 서비스 연결 ID에 실습 ACR의 `AcrPush`가 있는지 확인합니다. Argo CD 토큰과는 무관합니다. |
+| `Deploy`가 `curl`에서 실패 | `argocdServer`에 `https://`나 공백이 없는지, 02의 공인 IP가 그대로인지 확인합니다. |
+| `Deploy`가 `account get-user-info`에서 실패 | 토큰이 틀렸거나 만료됐습니다. 3절에서 새로 만들어 `argocdToken`을 바꿉니다. |
+| Application이 있는데 `PermissionDenied` | 계정 `ci`의 권한이 템플릿과 다릅니다. 확장 설정은 직접 고치지 말고 02의 배포 명령을 다시 실행합니다. |
+| 코드를 push했는데 실행이 바로 안 보임 | 자동 실행은 1~2분 늦게 시작할 수 있습니다. 같은 커밋으로 수동 실행을 추가하지 말고 기다립니다. |
+
+📋 **완료 체크**
+
+- [ ] 첫 실행이 성공했고 `Deploy`의 경고는 "Application이 아직 없음" 1건뿐입니다.
+- [ ] 이미지 digest와 차트 버전 `1.0.<빌드 ID>`를 기록했습니다.
 
 [← 이전](02-infrastructure.md) · [목차](../README.md) · [다음: 첫 배포 →](04-first-sync.md)

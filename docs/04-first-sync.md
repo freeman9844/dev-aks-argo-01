@@ -1,135 +1,137 @@
-# 04. GitOps 저장소 연결과 첫 배포
+# 04. Argo CD UI로 첫 배포
 
-**목표:** Argo CD가 비공개 `demo-gitops:demo`를 읽고 v1 Pod 다섯 개를 띄우도록 합니다. CI의 쓰기 ID와 Argo CD의 읽기 ID는 분리합니다.
+**목표:** Argo CD UI에서 ACR 차트 저장소를 연결하고 Application을 만든 뒤, 파이프라인을 다시 실행해 **CI가 요청한 Sync**로 v1 Pod 다섯 개를 띄웁니다.
 
-## 1. Git 읽기용 관리 ID 만들기
+## 1. 배포 허용 범위(AppProject) 적용
 
-👁️ **설명** — 비공개 Azure Repos는 익명 clone을 허용하지 않습니다. 이 실습은 PAT나 암호 대신 **사용자 할당 관리 ID**로 저장소를 읽습니다. Argo CD에서 Git을 읽는 구성 요소는 `argocd-repo-server`입니다. 이 Pod의 Kubernetes 서비스 계정 토큰을 Microsoft Entra ID가 신뢰하도록 **페더레이션**하면, Pod는 관리 ID의 토큰을 받아 Azure Repos에 접근합니다. 장기 비밀은 클러스터나 Git 어디에도 저장되지 않습니다.
+👁️ **설명** — `AppProject`는 *어느 소스에서 어느 네임스페이스로 무엇을 배포해도 되는지* 정하는 울타리입니다. [`bootstrap/project.yaml`](../bootstrap/project.yaml)은 소스를 **실습 ACR의 `helm/` 경로**로, 대상을 `demo` 네임스페이스로, 리소스 종류를 `Rollout`과 `Service`로 제한합니다. 03의 `ci` 계정 권한도 이 프로젝트 이름(`demo`)을 기준으로 선언돼 있습니다.
 
-```mermaid
-flowchart LR
-  sa["argocd-repo-server Pod<br/>서비스 계정 토큰"] -->|"1. 토큰 교환<br/>issuer + subject 일치 확인"| entra["Microsoft Entra ID<br/>관리 ID id-workshop-git-reader"]
-  entra -->|"2. 관리 ID 액세스 토큰"| sa
-  sa -->|"3. 토큰으로 git fetch<br/>demo-gitops Read만"| repos["Azure Repos<br/>demo-gitops:demo"]
-```
-
-페더레이션 자격 증명의 `issuer`는 **어느 클러스터인지**, `subject`는 **그 안의 어느 서비스 계정인지** 제한합니다. 따라서 다른 클러스터나 같은 클러스터의 다른 Pod는 이 관리 ID를 쓸 수 없습니다.
-
-🟢 **실행 · 참가자 PC / PowerShell**, 이어서 **브라우저 / Azure DevOps**
+🟢 **실행 · 참가자 PC / PowerShell**
 
 ```powershell
-az aks update -g $rg -n $aks --enable-oidc-issuer --enable-workload-identity
-$reader = az identity create -g $rg -n id-workshop-git-reader | ConvertFrom-Json
-$issuer = az aks show -g $rg -n $aks --query oidcIssuerProfile.issuerUrl -o tsv
-az identity federated-credential create -g $rg --identity-name id-workshop-git-reader -n argocd-repo-server --issuer $issuer --subject system:serviceaccount:argocd:argocd-repo-server --audiences api://AzureADTokenExchange
+(Get-Content .\bootstrap\project.yaml -Raw).Replace('ACR_LOGIN_SERVER',$loginServer) | kubectl apply -f -
+kubectl get appproject demo -n argocd -o jsonpath='{.spec.sourceRepos}{"\n"}'
 ```
 
-첫 줄은 AKS가 서비스 계정 토큰을 발급하는 OIDC 발급자를 공개하고, Pod에 Azure 토큰 정보를 주입하는 워크로드 ID 웹후크를 켭니다. 이미 켜져 있으면 그대로 진행됩니다.
+📋 **확인** — 출력이 `["<ACR 로그인 서버>/helm"]`입니다.
 
-Azure DevOps **Organization settings → Users → Add users**에서 `id-workshop-git-reader`를 검색해 추가합니다. 이름이 같은 항목이 여럿이면 `$reader.principalId`와 대조합니다. 권한은 아래 세 가지만 줍니다.
+## 2. UI에서 ACR 차트 저장소 연결
 
-| 항목 | 값 | 이유 |
+👁️ **설명** — ACR은 Helm 차트를 **OCI 형식**으로 보관합니다. Argo CD에는 비밀번호 대신 **Azure 워크로드 ID**로 접속하도록 등록합니다. 그러면 02에서 만든 관리 ID(`AcrPull`)의 토큰을 `argocd-repo-server`가 그때그때 받아 씁니다. 저장소 등록 정보에 비밀 값이 남지 않습니다.
+
+🟢 **실행 · 브라우저 / Argo CD UI → Settings → Repositories → + CONNECT REPO**
+
+| 항목 | 값 |
+|---|---|
+| 연결 방식 | 상단 **VIA SSH**를 눌러 **VIA HTTP/HTTPS**로 바꿉니다. |
+| Type | `helm` |
+| Name | `acr-helm` |
+| Project | 비워 둡니다. |
+| Repository URL | `<ACR 로그인 서버>/helm` — **`https://`나 `oci://`를 붙이지 않습니다.** 예: `acrargo1a2b3c4d.azurecr.io/helm` |
+| Username / Password | 비워 둡니다. |
+| Enable OCI | 체크 |
+| Use Azure Workload Identity | 체크 |
+
+**CONNECT**를 누릅니다.
+
+📋 **확인** — 목록에서 `acr-helm`의 **CONNECTION STATUS**가 `Successful`입니다.
+
+> **UI 등록이 안 될 때의 대체 경로:** 같은 내용을 [`bootstrap/repository.yaml`](../bootstrap/repository.yaml)로 적용할 수 있습니다. 이 파일에도 비밀 값은 없습니다.
+>
+> ```powershell
+> (Get-Content .\bootstrap\repository.yaml -Raw).Replace('ACR_LOGIN_SERVER',$loginServer) | kubectl apply -f -
+> ```
+
+## 3. UI에서 Application 만들기
+
+👁️ **설명** — `Application`은 *어느 차트를 어느 클러스터·네임스페이스에 배포할지* 적은 명세입니다. 이번 단계에서는 **자동 Sync를 끕니다(Manual).** 그래서 Application을 만들어도 바로 배포되지 않고, 이후 배포는 CI의 Sync 요청이나 UI의 SYNC 버튼으로만 일어납니다.
+
+🟢 **실행 · 브라우저 / Argo CD UI → Applications → + NEW APP**
+
+⚠️ **입력 순서가 중요합니다.** SOURCE의 Repository URL을 입력하기 **전에** 오른쪽 **GIT ▾**을 눌러 **HELM**으로 바꾸세요. URL을 먼저 고르면 화면이 Git용(Revision·Path) 입력란으로 남아 차트 이름을 넣을 수 없습니다. 그렇게 됐다면 **CANCEL** 후 다시 시작합니다.
+
+| 구역 | 항목 | 값 |
 |---|---|---|
-| 액세스 수준 | **Basic** | Stakeholder는 비공개 Repos의 코드를 읽을 수 없습니다. |
-| 실습 프로젝트 | **View project-level information**만 Allow | 프로젝트를 찾을 수 있게 합니다. 프로젝트 그룹(Contributors·Readers)에는 추가하지 않습니다. |
-| `demo-gitops` 저장소 | **Read**만 Allow | `demo-app` 소스와 다른 저장소는 읽지 못하게 합니다. |
+| GENERAL | Application Name | `demo-app` |
+| GENERAL | Project Name | `demo` |
+| GENERAL | SYNC POLICY | `Manual` (기본값 그대로) |
+| GENERAL | SYNC OPTIONS | **AUTO-CREATE NAMESPACE** 체크 |
+| SOURCE | 저장소 종류 | **GIT ▾ → HELM** (URL 입력 전에) |
+| SOURCE | Repository URL | 2절에서 연결한 `<ACR 로그인 서버>/helm` |
+| SOURCE | Chart | `demo-app` — 목록이 비어 있으면 직접 입력합니다. |
+| SOURCE | Chart 오른쪽 버전 칸 | `1.0.*` |
+| DESTINATION | Cluster URL | `https://kubernetes.default.svc` |
+| DESTINATION | Namespace | `demo` |
 
-조직 정책상 관리 ID 등록이 제한되면 관리자에게 요청하세요.
+차트를 제대로 읽으면 화면 아래 **Helm → PARAMETERS**에 `image.digest`, `image.repository`, `replicaCount`가 채워집니다. `image.digest`가 03에서 기록한 digest와 같은지 보세요. 관리 ID로 ACR 차트를 읽었다는 증거입니다. 확인했으면 맨 위 **CREATE**를 누르고, 창이 닫힐 때까지 몇 초 기다립니다.
 
-📋 **확인** — Azure에서 관리 ID를 만든 것만으로 Azure Repos 권한이 생기지는 않습니다. 조직에 추가한 ID가 `$reader.principalId`와 같은지, Read 권한을 준 저장소가 `demo-gitops` 하나뿐인지 확인하세요.
+👁️ **왜 `1.0.*`인가요?** — 처음 만들 때 ACR에 있는 가장 높은 `1.0.x` 차트를 고르라는 뜻입니다. 이후에는 CI가 빌드마다 `argocd app set --revision 1.0.<빌드 ID>`로 **정확한 버전**을 지정합니다. OCI 저장소라 Chart 목록이 비어 보이는 것은 정상입니다.
 
-## 2. Argo CD 확장 설정으로 관리 ID 연결
-
-👁️ **설명** — `argocd` 네임스페이스의 리소스는 AKS 확장이 관리합니다. 서비스 계정이나 Deployment를 `kubectl annotate/patch`로 직접 고치면, 확장이 업데이트될 때 원래대로 돌아갈 수 있습니다. 그래서 **확장 구성 값**으로 관리 ID를 지정합니다. 그러면 확장이 서비스 계정 주석, Pod 레이블, 환경 변수를 알아서 관리합니다.
-
-🟢 **실행 · 같은 PowerShell**
+📋 **확인 · 입력한 내용 대조** — 방금 만든 명세를 저장소의 [`bootstrap/application.yaml`](../bootstrap/application.yaml)과 비교합니다.
 
 ```powershell
-az k8s-extension update -g $rg --cluster-name $aks --cluster-type managedClusters -n argocd --config azure.workloadIdentity.enabled=true --config "azure.workloadIdentity.clientId=$($reader.clientId)" --yes
-az k8s-extension show -g $rg --cluster-name $aks --cluster-type managedClusters -n argocd --query configurationSettings
-kubectl rollout status deployment/argocd-repo-server -n argocd --timeout=5m
-kubectl get sa argocd-repo-server -n argocd -o jsonpath='{.metadata.annotations.azure\.workload\.identity/client-id}{"\n"}'
-kubectl get deployment argocd-repo-server -n argocd -o jsonpath='{.spec.template.metadata.labels.azure\.workload\.identity/use}{"\n"}'
+kubectl get application demo-app -n argocd -o jsonpath='{.spec}{"\n"}'
+Get-Content .\bootstrap\application.yaml
 ```
 
-📋 **확인** — 아래 세 가지를 확인합니다.
+`chart`, `repoURL`, `targetRevision`, `destination`, `syncOptions`의 `CreateNamespace=true`가 같고, **`automated`가 없어야** 합니다. 화면의 `demo-app` 카드는 `OutOfSync`·`Missing`입니다. 아직 아무것도 배포하지 않았으니 정상입니다.
 
-- `configurationSettings`에 02에서 넣은 `redis-ha.enabled`, `server.service.type`이 그대로 있고, `azure.workloadIdentity.*` 두 값이 추가됐습니다. `update`는 기존 설정을 지우지 않고 값을 덧붙입니다.
-- 서비스 계정 주석의 값이 `$reader.clientId`와 같습니다.
-- Deployment 레이블 값이 `true`입니다.
+> **UI 생성이 안 될 때의 대체 경로:**
+>
+> ```powershell
+> (Get-Content .\bootstrap\application.yaml -Raw).Replace('ACR_LOGIN_SERVER',$loginServer) | kubectl apply -f -
+> ```
 
-확장은 Git을 읽는 `argocd-repo-server`에만 이 client ID를 연결합니다. 다른 Argo CD 구성 요소에는 이 관리 ID가 붙지 않습니다.
+## 4. 파이프라인 재실행으로 첫 배포
 
-이제 저장소를 등록합니다. `$repo`는 03에서 복사한 `demo-gitops` HTTPS 주소입니다.
+👁️ **설명** — 이제 Application이 있으므로 03에서 경고만 남겼던 `Deploy` Job이 실제로 Sync를 요청합니다. 이번 실행은 새 이미지와 새 차트 `1.0.<새 빌드 ID>`를 만들고, 그 버전을 Application에 지정한 뒤 Sync합니다. 처음 만드는 Rollout은 비교할 이전 버전이 없으므로 **카나리 정지 없이** 바로 5개를 띄웁니다.
 
-```powershell
-@{apiVersion='v1';kind='Secret';metadata=@{name='demo-gitops';namespace='argocd';labels=@{'argocd.argoproj.io/secret-type'='repository'}};stringData=@{type='git';project='demo';url=$repo;useAzureWorkloadIdentity='true'}} |
-  ConvertTo-Json -Depth 6 | kubectl apply -f -
+🟢 **실행 · 브라우저 / Azure DevOps → Pipelines → demo-app 파이프라인 → Run pipeline**
+
+실행이 끝나면 `Deploy` 로그 끝부분에서 아래와 같은 줄을 확인합니다. 경고는 없어야 합니다.
+
+```text
+Sync Status:        Synced to 1.0.<빌드 ID>
 ```
 
-이 Secret에는 PAT나 암호가 **없습니다**. `useAzureWorkloadIdentity='true'`는 repo-server가 접속할 때 위 관리 ID로 토큰을 받아 쓰라는 표시입니다.
-
-⚠️ **주의** — 02의 Bicep에는 `azure.workloadIdentity.*` 값이 없습니다. 같은 템플릿을 **다시 배포하면 두 값이 삭제**되고 Git 읽기가 실패합니다(`what-if`에서 `Delete`로 표시됨). 템플릿을 다시 배포했다면 이 절의 `az k8s-extension update`를 다시 실행하세요. 운영 환경에서는 이 두 값을 Bicep의 `configurationSettings`에 함께 선언해 관리합니다. 자세한 내용은 [Argo CD 확장과 워크로드 ID](https://learn.microsoft.com/azure/azure-arc/kubernetes/tutorial-use-gitops-argocd#create-gitops-argo-cd-extension-with-workload-identity)를 참고하세요.
-
-## 3. Application 생성 및 관찰
-
-👁️ **설명** — `AppProject`는 *어느 저장소에서 어느 네임스페이스로 배포해도 되는지* 정하고, `Application`은 *그 저장소의 어떤 브랜치와 경로를 따라갈지* 지정합니다. `demo` 네임스페이스에 앱 YAML을 직접 적용하지 마세요. Git에서 읽어 생성하는 것이 이번 단계의 관찰 대상입니다.
-
-🟢 **실행 · 같은 PowerShell**
+🟢 **실행 · 참가자 PC / PowerShell**
 
 ```powershell
-foreach ($f in 'project','application') {
-  (Get-Content ".\bootstrap\$f.yaml" -Raw).Replace('GITOPS_REPO_URL',$repo) | kubectl apply -f -
-  if ($LASTEXITCODE -ne 0) { throw "$f 등록 실패" }
-}
-kubectl wait -n demo --for=create rollout/demo-app --timeout=5m
 kubectl argo rollouts status demo-app -n demo --timeout 5m
-kubectl get application demo-app -n argocd
 kubectl get rs -n demo -l app=demo-app
+kubectl get application demo-app -n argocd -o jsonpath='{.status.sync.revision} {.status.sync.status} {.status.health.status}{"\n"}'
+kubectl get application demo-app -n argocd -o jsonpath='{.status.history[-1:].initiatedBy.username}{"\n"}'
 ```
 
-**예상 결과:** `Synced`이며 v1 ReplicaSet의 `READY`가 5입니다. 최초 배포는 비교할 이전 버전이 없어 카나리 정지를 하지 않습니다.
+**예상 결과:** ReplicaSet의 `READY`가 5, 세 번째 명령은 `1.0.<빌드 ID> Synced Healthy`, 마지막 명령은 `ci`입니다. Sync를 누가 요청했는지가 Argo CD에 **`ci`**로 남는다는 뜻입니다.
 
-### 브라우저에서 같은 배포 확인하기
+🟢 **실행 · 브라우저 / Argo CD UI → Applications → demo-app**
 
-1. 같은 실습 kubeconfig를 쓰는 PowerShell 창에서 아래 명령을 실행한 채 둡니다. 서비스는 `ClusterIP`로 유지되며 참가자 PC의 루프백에서만 접속할 수 있습니다.
+1. 카드가 `Healthy`·`Synced`로 바뀌었습니다. 카드를 눌러 트리에서 `svc`, `rollout`, ReplicaSet, Pod 5개를 찾습니다.
+2. 상단 **HISTORY AND ROLLBACK**에서 Revision `1.0.<빌드 ID>` 항목을 확인합니다. 05에서 롤백할 때 이 목록을 씁니다.
+3. 상단 **APP DETAILS → PARAMETERS**의 `image.digest`가 이번 실행 **Push image and Helm chart to ACR** 로그의 digest와 같은지 확인합니다.
 
-   ```powershell
-   kubectl port-forward -n argocd --address 127.0.0.1 svc/argocd-server 19443:443
-   ```
-
-2. 브라우저에서 `https://127.0.0.1:19443`을 엽니다. 인증서 경고가 있다면 **방금 포워딩한 로컬 주소**인지 먼저 확인합니다. 조직에서 발급한 계정이 있으면 그 계정을 사용하세요. 이 워크숍처럼 방금 생성한 전용 클러스터의 최초 관리자라면, 다른 PowerShell 창에서 **같은 `$env:KUBECONFIG`**를 지정하고 다음 명령으로 초기 암호를 클립보드에 복사합니다. 사용자 이름은 `admin`입니다. 로그인 후 클립보드를 비우고 초기 암호를 변경하세요. 공유 PC나 녹화 중인 터미널에서는 초기 암호를 출력하지 않습니다.
-
-   ```powershell
-   $encoded = kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}'
-   if ($LASTEXITCODE -ne 0 -or !$encoded) { throw '초기 관리자 Secret을 사용할 수 없습니다.' }
-   Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)))
-   Remove-Variable encoded
-   ```
-
-   브라우저에서 붙여넣은 **뒤에** `Set-Clipboard -Value ''`를 별도로 실행합니다.
-
-3. **Applications**에서 `demo-app` 카드를 찾습니다. **Project: demo**, **Path: dev**, **Namespace: demo**를 확인합니다. 위에서 Application을 이미 등록했으므로 **NEW APP**을 다시 누르지 않습니다.
-
-   ![Argo CD Applications의 demo-app 카드: Healthy, Synced, 경로 dev와 대상 네임스페이스 demo](images/04-argocd-applications.png)
-
-4. 카드의 **demo-app** 이름을 클릭합니다. **SYNC STATUS** 옆의 짧은 SHA를 Azure Repos의 **GitOps 커밋**과 비교하고, 아래 트리에서 `svc`와 `rollout`을 찾습니다. `LAST SYNC: Sync OK`와 `APP HEALTH: Healthy`는 서로 다른 확인 항목입니다.
-
-   ![v1 첫 동기화 상세 화면: Healthy, Synced, Sync OK와 Service 및 Rollout 리소스](images/04-argocd-v1-tree.png)
-
-   *04·05 그림은 AKS의 `Microsoft.ArgoCD` 확장(v3.5.6)에 Playwright로 접속해 촬영한 실제 화면입니다. 기존 `demo` 브랜치를 건드리지 않도록 촬영에만 `workshop-ui` 브랜치와 별도 ACR 빌드를 사용했습니다. 참가자는 교재의 `demo` 브랜치를 그대로 사용하며 SHA·시간은 달라집니다. 비공개 주소와 개인 작성자 정보는 가렸습니다.*
-
-📋 **확인 · 어느 커밋을 배포했나요?**
+📋 **확인 · 세 값 연결하기**
 
 ```powershell
-kubectl get application demo-app -n argocd -o jsonpath='{.status.sync.revision}'
-kubectl get rollout demo-app -n demo -o jsonpath='{.spec.template.spec.containers[0].image}'
+kubectl get rollout demo-app -n demo -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 ```
 
-첫 출력은 **03의 GitOps 커밋 SHA**, 두 번째 출력의 `@sha256:…` 부분은 **03의 ACR digest**와 같아야 합니다. `Synced`는 명세가 Git과 일치한다는 뜻이지 Pod가 요청에 응답한다는 뜻은 아닙니다. 위 ReplicaSet의 Ready 수까지 확인하세요.
+`@sha256:…` 부분은 이번 실행의 **이미지 digest**, 앞 절의 `status.sync.revision`은 **차트 버전**과 같아야 합니다. `Synced`는 명세가 차트와 일치한다는 뜻이지 Pod가 응답한다는 뜻은 아닙니다. ReplicaSet의 Ready 수까지 확인하세요.
 
-**트러블슈팅:** `ComparisonError`는 다음 순서로 확인합니다: Git URL → `demo-gitops` Read 권한 → 확장의 `azure.workloadIdentity.clientId` → 페더레이션 subject(`system:serviceaccount:argocd:argocd-repo-server`). `ImagePullBackOff`는 Git 문제가 아닙니다. ACR digest와 kubelet의 AcrPull부터 확인합니다.
+**트러블슈팅**
 
-**완료 체크:** Git 커밋이 동기화됐고 v1 Pod 5개가 Ready입니다.
+| 증상 | 원인과 조치 |
+|---|---|
+| CONNECT REPO가 `Failed` | URL에 `https://`·`oci://`를 붙였는지, **Enable OCI**와 **Use Azure Workload Identity**를 모두 체크했는지, 02의 두 client ID가 같은지 확인합니다. |
+| NEW APP에 Chart 칸 대신 Path 칸이 보임 | URL을 HELM 선택보다 먼저 입력했습니다. CANCEL 후 HELM을 먼저 고릅니다. |
+| CREATE 시 `Unable to generate manifests` | 저장소 연결 상태와 버전 칸(`1.0.*`)을 확인합니다. CREATE 직후 창을 닫지 말고 기다립니다. |
+| 재실행했는데 `Deploy`가 여전히 "아직 없음" 경고 | Application 이름이 `demo-app`, 프로젝트가 `demo`인지 확인합니다. 다른 이름이면 `ci`가 볼 수 없습니다. |
+| Pod가 `ImagePullBackOff` | 차트 문제가 아닙니다. Rollout의 이미지 digest가 ACR에 있는지, kubelet의 AcrPull을 확인합니다. |
+
+📋 **완료 체크**
+
+- [ ] UI로 저장소를 연결하고 Application을 만들었으며, 명세에 `automated`가 없습니다.
+- [ ] 파이프라인 재실행 후 v1 Pod 5개가 Ready이고, History의 Sync 요청자가 `ci`입니다.
 
 [← 이전](03-pipeline.md) · [목차](../README.md) · [다음: 카나리 →](05-canary.md)

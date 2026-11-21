@@ -1,22 +1,29 @@
-# 05. 카나리 승격과 Git 롤백
+# 05. 카나리 배포와 롤백
 
-**목표:** 새 버전이 모든 사용자에게 한꺼번에 배포되지 않도록 멈춘 뒤, 승격과 복구를 직접 관찰합니다.
+**목표:** v2를 배포해 카나리 상태에서 멈춘 것을 확인하고, UI에서 승격(Resume)합니다. 이어서 Argo CD History로 긴급 롤백한 뒤, 코드를 되돌려 정상 상태로 복구합니다.
 
 ## 1. v2 릴리스
 
-👁️ **설명** — [Rollout 명세](../gitops-seed/dev/rollout.yaml)는 목표 수 5개, 첫 단계 `setWeight: 20`, 다음 단계 `pause: {}`입니다. v2 하나를 확인할 시간을 확보하기 위해 정지 시간은 지정하지 않았습니다. `Paused`는 이번 실습에서는 장애가 아니라 의도한 상태입니다.
+👁️ **설명** — [Rollout 템플릿](../chart/demo-app/templates/rollout.yaml)은 Pod 5개를 목표로 하며 단계가 `setWeight: 20` → `pause: {}` → `setWeight: 100`입니다. 정지 시간을 지정하지 않았기 때문에 v2 하나가 뜬 상태에서 **사람이 승격할 때까지 멈춥니다.** 이번 실습에서 `Suspended`(정지)는 장애가 아니라 의도한 상태입니다.
 
-🟢 **실행 · 브라우저 / Azure DevOps → Repos**, 관찰은 **PC / PowerShell**
+🟢 **실행 · 브라우저 / Azure DevOps → Repos → demo-app → Files**
 
-`demo-app`의 `app/VERSION` 값을 `v1`에서 `v2`로 바꿔 `main`에 병합합니다. **자동 CI 한 건만** 실행되는지 확인합니다. 수동으로 같은 빌드를 추가하지 마세요. GitOps 저장소에서 새 digest가 기록된 커밋 SHA를 복사합니다.
+1. `app/VERSION`을 열고 **Edit**를 누릅니다.
+2. 값 `v1`을 `v2`로 바꾸고 **Commit**합니다(브랜치 `main`).
+3. **Pipelines**에서 이 커밋으로 **자동 실행 한 건**이 시작되는지 봅니다. 1~2분 걸릴 수 있습니다. 같은 커밋으로 수동 실행을 추가하지 마세요.
+
+파이프라인의 `Deploy` Job은 Sync를 요청하고 **Sync가 끝날 때까지만** 기다립니다. 카나리 승격까지 기다리지 않으므로 Rollout이 정지 상태여도 파이프라인은 성공으로 끝납니다.
+
+🟢 **실행 · 참가자 PC / PowerShell** — 파이프라인이 끝나면 관찰합니다.
 
 ```powershell
-kubectl argo rollouts get rollout demo-app -n demo --watch
+kubectl argo rollouts get rollout demo-app -n demo
+kubectl get rs -n demo -l app=demo-app
 ```
 
-`Paused`가 되면 Ctrl+C로 **관찰만** 종료합니다. `kubectl get rs -n demo`를 지금과 60초 후에 실행합니다. 예상 결과는 두 번 모두 **v1 Ready 4개, v2 Ready 1개**입니다. 이는 Pod 비율이지 실제 요청의 정확한 20%를 뜻하지 않습니다.
+첫 명령의 `Status`는 `॥ Paused`입니다. 60초 뒤에 `kubectl get rs -n demo -l app=demo-app`을 한 번 더 실행합니다. 두 번 모두 **v1 Ready 4개, v2 Ready 1개**여야 합니다. 이 숫자는 Pod 비율이며 실제 요청이 정확히 20%씩 나뉜다는 뜻은 아닙니다.
 
-📋 **확인 · 예상 출력 예시** — 이름 뒤의 해시는 환경마다 다릅니다. 다음 표에서 볼 것은 이름 순서가 아니라 **READY**입니다.
+📋 **확인 · 예상 출력 예시** — 이름 뒤의 해시는 환경마다 다릅니다. 이름 순서가 아니라 **READY**를 보세요.
 
 ```text
 NAME                   DESIRED   CURRENT   READY
@@ -26,15 +33,13 @@ demo-app-<신규 해시>          1         1       1
 
 ### Argo CD 화면에서 정지와 실패 구분하기
 
-[04에서 연 Argo CD UI](04-first-sync.md)에서 **Applications → demo-app**을 클릭합니다. **SYNC STATUS**는 `Synced`인데 **APP HEALTH**는 `Suspended`일 수 있습니다. 촬영 당시 아래 화면의 `rollout` 노드에도 보라색 정지 아이콘이 있었고, 같은 시점 `kubectl get rs`에서는 v1 Ready 4개·v2 Ready 1개였습니다.
+Argo CD UI에서 **Applications → demo-app**을 엽니다. **SYNC STATUS**는 `Synced`이고 **APP HEALTH**는 `Suspended`입니다. 트리의 `rollout` 노드에도 정지 표시가 붙고, ReplicaSet 두 개가 각각 Pod 4개와 1개를 거느립니다.
 
-![카나리 정지 중인 실제 Argo CD 화면: APP HEALTH는 Suspended, SYNC STATUS는 Synced, LAST SYNC는 Sync OK](images/05-argocd-canary-tree.png)
+새 차트는 이미 클러스터에 반영됐고 Rollouts가 사람의 승격을 기다리는 상태입니다. **SYNC를 다시 누르는 것은 승격이 아닙니다.**
 
-GitOps 커밋은 이미 반영됐고 Rollouts가 사람의 승격을 기다리는 상태입니다. **SYNC를 다시 누르는 것은 승격이 아닙니다.** 화면만으로 Pod 비율을 단정하지 말고 아래에서 실제 두 버전의 응답까지 확인하세요.
+## 2. 실제 응답 비교
 
-## 2. 실제 응답 비교 및 승격
-
-👁️ **설명** — Service를 두 번 호출하면 우연히 같은 버전만 만날 수 있습니다. 아래에서는 각 ReplicaSet의 해시로 Pod를 하나씩 고른 뒤, 그 Pod 안에서 `/version`을 호출합니다. 따라서 두 응답을 코드 변경 전후와 직접 연결할 수 있습니다.
+👁️ **설명** — Service를 두 번 호출하면 우연히 같은 버전만 만날 수 있습니다. 아래 명령은 각 ReplicaSet에서 Pod를 하나씩 골라 그 Pod 안에서 `/version`을 호출합니다. 그래서 두 응답을 코드 변경 전후와 직접 연결할 수 있습니다.
 
 🟢 **실행 · 참가자 PC / PowerShell**
 
@@ -47,34 +52,103 @@ foreach ($rs in $sets | Where-Object { $_.status.readyReplicas -gt 0 }) {
 }
 ```
 
-**예상 결과:** 한 응답은 `v1`, 다른 응답은 `v2`이고 `commit`도 다릅니다. `kubectl argo rollouts promote demo-app -n demo`로 승격한 뒤 `kubectl argo rollouts status demo-app -n demo --timeout 5m`과 `kubectl get rs -n demo`로 **v2 Ready 5개**를 확인합니다.
+**예상 결과:** 한 응답은 `v1`, 다른 응답은 `v2`이고 `commit`도 서로 다릅니다.
 
-## 3. Git으로 복구
+## 3. UI에서 승격(Resume)
 
-👁️ **설명** — 승격은 **현재 배포를 계속 진행**하는 동작입니다. 반대로 롤백은 **원하는 이미지 자체를 이전 digest로 바꾸는 일**입니다. AKS에서 Pod를 지우는 대신 GitOps 커밋을 되돌려야 이후 동기화에서도 v1이 유지됩니다.
+👁️ **설명** — 승격은 멈춘 카나리를 **계속 진행**시키는 동작입니다. Argo CD UI에서 Rollout 리소스에 대해 바로 실행할 수 있습니다.
 
-🟢 **실행 · 같은 PowerShell**
+🟢 **실행 · 브라우저 / Argo CD UI → Applications → demo-app**
+
+1. 트리에서 `rollout` 노드 오른쪽의 **⋮**를 누릅니다.
+2. **Resume**을 선택하고 확인 창에서 **OK**를 누릅니다.
+
+🟢 **실행 · 참가자 PC / PowerShell**
 
 ```powershell
-$gitopsDir = Join-Path ([IO.Path]::GetTempPath()) ("gitops-" + (New-Guid))
-git clone -b demo --single-branch $repo $gitopsDir
-git -C $gitopsDir log -2 --oneline
-$v2Commit = Read-Host '되돌릴 v2 이미지 변경 커밋 SHA'
-git -C $gitopsDir revert --no-edit $v2Commit
-if ($LASTEXITCODE -ne 0) { throw 'revert 실패: push하지 마세요.' }
-git -C $gitopsDir push origin demo
+kubectl argo rollouts status demo-app -n demo --timeout 5m
+kubectl get rs -n demo -l app=demo-app
 ```
 
-Argo CD가 **revert 커밋**에 동기화된 뒤 Rollout을 관찰합니다. 다시 `Paused`이면 승격합니다. v1 Ready 5개·v2 0개, `/version` 응답의 원래 SHA까지 확인해야 복구가 끝난 것입니다.
+**예상 결과:** `Healthy`, 그리고 **v2 Ready 5개**·v1 0개입니다. UI의 APP HEALTH도 `Healthy`로 바뀝니다.
 
-**트러블슈팅:** GitOps 커밋 직후의 `Healthy`는 이전 버전의 상태일 수 있습니다. `kubectl get application demo-app -n argocd -o jsonpath='{.status.sync.revision}'`을 기대하는 커밋과 먼저 비교하세요.
+> **CLI 대안:** 같은 승격을 `kubectl argo rollouts promote demo-app -n demo`로 할 수 있습니다. 실습에서는 팀이 UI에 익숙해지도록 Resume 메뉴를 씁니다.
+
+## 4. History로 긴급 롤백
+
+👁️ **설명** — v2에 문제가 있다고 가정합니다. 코드를 고쳐 새 빌드를 기다리기 전에, Argo CD가 기억하는 **이전 차트 버전으로 즉시 되돌릴 수 있습니다.** Rollout의 `rollbackWindow`(최근 3개 버전) 덕분에 이전 버전으로 돌아갈 때는 카나리 정지 없이 바로 5개가 교체됩니다.
+
+🟢 **실행 · 브라우저 / Argo CD UI → Applications → demo-app → HISTORY AND ROLLBACK**
+
+1. 목록에서 v1이었던 차트 버전(04에서 확인한 `1.0.<빌드 ID>`) 항목을 찾습니다. 항목마다 배포 시각, 차트 버전, 요청자가 보입니다.
+2. 그 항목의 **⋮ → Rollback**을 누르고 확인 창에서 **OK**를 누릅니다.
+
+🟢 **실행 · 참가자 PC / PowerShell**
+
+```powershell
+kubectl get rs -n demo -l app=demo-app
+kubectl get application demo-app -n argocd -o jsonpath='{.status.sync.status} {.status.history[-1:].initiatedBy.username}{"\n"}'
+```
+
+**예상 결과:** 수십 초 안에 **v1 Ready 5개**·v2 0개, 두 번째 명령은 `OutOfSync admin`입니다.
+
+⚠️ **롤백 뒤 상태를 이해하세요.**
+
+| 관찰 | 의미 |
+|---|---|
+| `OutOfSync` | Application 명세는 여전히 v2 차트 버전을 가리킵니다. 클러스터만 이전 버전으로 돌아간 상태입니다. |
+| History 요청자 `admin` | 누가 긴급 조치를 했는지 남습니다. CI 배포는 `ci`로 남으므로 구분됩니다. |
+| 다음 CI 실행 | 새 차트 버전을 지정해 Sync하므로 롤백한 상태를 덮어씁니다. |
+
+즉 롤백은 **시간을 버는 긴급 조치**입니다. 코드가 그대로 v2이면 다음 빌드에서 v2가 다시 나갑니다. 그래서 다음 절에서 원인(코드)을 되돌립니다.
+
+## 5. 코드를 되돌려 정상화
+
+🟢 **실행 · 브라우저 / Azure DevOps → Repos → demo-app → Files**
+
+`app/VERSION`을 `v2`에서 `v1`로 바꿔 **Commit**합니다. 자동 실행 한 건이 끝날 때까지 기다립니다.
+
+👁️ **설명** — 내용은 v1이지만 **새 커밋으로 새로 빌드한 이미지**이므로 digest가 달라집니다. Rollouts에게는 새 버전이므로 다시 카나리로 멈춥니다. 1절과 같이 4:1을 확인하고, 3절과 같이 UI에서 **Resume**합니다.
+
+🟢 **실행 · 참가자 PC / PowerShell**
+
+```powershell
+kubectl argo rollouts status demo-app -n demo --timeout 5m
+kubectl get application demo-app -n argocd -o jsonpath='{.status.sync.revision} {.status.sync.status} {.status.health.status} {.status.history[-1:].initiatedBy.username}{"\n"}'
+```
+
+**예상 결과:** `1.0.<새 빌드 ID> Synced Healthy ci`, Pod 5개 모두 `/version` 응답이 `v1`이고 `commit`은 방금 만든 커밋입니다. 2절의 명령으로 확인할 수 있습니다.
+
+**트러블슈팅**
+
+| 증상 | 원인과 조치 |
+|---|---|
+| v2 커밋 후 파이프라인이 시작되지 않음 | 자동 실행은 1~2분 늦을 수 있습니다. 그래도 없으면 파이프라인의 트리거가 `main`인지 확인합니다. |
+| 정지 없이 바로 v2 5개가 됨 | 이미 같은 이미지가 최근 3개 버전 안에 있으면 `rollbackWindow`로 즉시 교체됩니다. 새 커밋인지 확인합니다. |
+| ⋮ 메뉴에 Resume이 없음 | `rollout` 노드가 아니라 ReplicaSet·Pod 노드의 메뉴를 열었습니다. 또는 이미 승격돼 정지 상태가 아닙니다. |
+| 롤백 후 `Healthy`인데 `OutOfSync` | 정상입니다. 4절 표를 보세요. SYNC를 누르면 다시 v2로 갑니다. |
+| `Synced`인데 응답이 예상과 다름 | `status.sync.revision`이 기대하는 차트 버전인지 먼저 비교합니다. |
 
 📋 **완료 체크**
 
 | 관찰 시점 | v1 Ready | v2 Ready | 함께 대조할 증거 |
 |---|---:|---:|---|
-| 카나리 정지 | 4 | 1 | 두 `/version` 응답의 서로 다른 SHA |
-| 수동 승격 후 | 0 | 5 | v2 digest는 정지 때와 동일 |
-| Git revert 동기화·복구 후 | 5 | 0 | 새 GitOps 커밋, **기존 v1** digest·HTTP 응답 |
+| 카나리 정지 | 4 | 1 | 두 `/version` 응답의 서로 다른 commit, UI `Suspended` |
+| UI Resume 후 | 0 | 5 | UI `Healthy`·`Synced` |
+| History 롤백 후 | 5 | 0 | `OutOfSync`, History 요청자 `admin` |
+| 코드 되돌림·Resume 후 | 5 | 0 | `Synced`, 요청자 `ci`, 새 commit의 `v1` 응답 |
+
+## 6. 이 방식의 한계와 다음 단계
+
+👁️ **설명** — 1단계에서 팀은 Git 저장소를 하나만 다루면서 Argo CD의 화면, 카나리, History를 익혔습니다. 동시에 실습하면서 다음 한계도 보았습니다.
+
+| 관찰한 한계 | 2단계 이후 해결 방법 |
+|---|---|
+| 어떤 버전이 배포돼야 하는지가 Argo CD 안(Application 명세)에만 있습니다. UI에서 바꾸면 Git에 흔적이 남지 않습니다. | values와 Application 정의를 **Git 설정 저장소**로 옮깁니다. |
+| 배포 승인이 "파이프라인을 누가 실행했는가"에 묶여 있습니다. | 설정 저장소의 **PR 승인**이 곧 배포 승인이 됩니다. |
+| 롤백하면 `OutOfSync`가 남고, 누군가 손으로 바꾼 것을 Argo CD가 되돌리지 않습니다. | **자동 Sync와 Self-Heal**로 Git과 클러스터를 항상 일치시킵니다. |
+| 환경이 늘면 Application을 UI에서 하나씩 만들어야 합니다. | **ApplicationSet**으로 환경별 Application을 생성합니다. |
+
+팀이 PR 기반 작업에 익숙해지면 2단계로 넘어갑니다.
 
 [← 이전](04-first-sync.md) · [목차](../README.md) · [다음: 정리 →](06-cleanup.md)
