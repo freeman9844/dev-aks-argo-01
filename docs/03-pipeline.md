@@ -8,6 +8,8 @@
 
 🟢 **실행 · 브라우저 / Azure DevOps → Repos**, 이후 **PC / PowerShell**
 
+> 📎 **참고 · Azure DevOps 접속 주소** — 브라우저에서 `https://dev.azure.com/<조직>`을 열면 조직의 프로젝트 목록이 나옵니다. 실습 프로젝트를 고르면 주소가 `https://dev.azure.com/<조직>/<프로젝트>`가 되고, 저장소 화면은 `https://dev.azure.com/<조직>/<프로젝트>/_git`입니다. 조직 이름을 모르면 [https://aex.dev.azure.com/me](https://aex.dev.azure.com/me)에 로그인해 내가 속한 조직 목록을 확인합니다. 예전 주소 형식인 `https://<조직>.visualstudio.com`도 같은 곳으로 연결됩니다.
+
 1. 비공개 실습 프로젝트에서 **Repos → Files → 상단 저장소 이름 ▼ → New repository**를 엽니다. 유형 **Git**, 이름 `demo-app`, **Add a README** 해제 후 **Create**를 선택합니다.
 2. **Clone → HTTPS** 주소를 복사합니다. 마지막 경로가 `/_git/demo-app`인지 확인하세요.
 3. PC로 돌아와 다음을 실행합니다. 로컬 원격 설정은 바꾸지 않고 새 저장소에만 push합니다.
