@@ -135,7 +135,7 @@ kubectl get application demo-app -n argocd -o jsonpath='{.status.history[-1:].in
 
 🟢 **실행 · 브라우저 / Argo CD UI → Applications → demo-app**
 
-1. 카드가 `Healthy`·`Synced`로 바뀌었습니다. 카드를 눌러 트리에서 `svc`, `rollout`, ReplicaSet, Pod 5개를 찾습니다. 상단 SYNC STATUS 아래의 `Auto sync is not enabled.`는 1단계 설계대로 자동 Sync가 꺼져 있다는 뜻입니다.
+1. 카드가 `Healthy`·`Synced`로 바뀌었습니다. 카드를 눌러 트리에서 `svc`, `rollout`, ReplicaSet, Pod 5개를 찾습니다. 상단 SYNC STATUS 아래의 `Auto sync is not enabled.`는 이 워크숍 설계대로 자동 Sync가 꺼져 있다는 뜻입니다.
 
    ![demo-app 트리: svc, rollout, rs 하나와 Pod 5개](images/04-argocd-app-tree.png)
 

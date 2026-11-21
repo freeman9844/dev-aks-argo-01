@@ -159,17 +159,17 @@ kubectl get application demo-app -n argocd -o jsonpath='{.status.sync.revision} 
 | History 롤백 후 | 5 | 0 | `OutOfSync`, History 요청자 `admin` |
 | 코드 되돌림·Resume 후 | 5 | 0 | `Synced`, 요청자 `ci`, 새 commit의 `v1` 응답 |
 
-## 6. 이 방식의 한계와 다음 단계
+## 6. 이 방식의 한계
 
-👁️ **설명** — 1단계에서 팀은 Git 저장소를 하나만 다루면서 Argo CD의 화면, 카나리, History를 익혔습니다. 동시에 실습하면서 다음 한계도 보았습니다.
+👁️ **설명** — 이번 실습에서 팀은 Git 저장소를 하나만 다루면서 Argo CD의 화면, 카나리, History를 익혔습니다. 동시에 실습하면서 다음 한계도 보았습니다. 운영에 적용할 때는 오른쪽 열의 방법으로 보완할 수 있습니다.
 
-| 관찰한 한계 | 2단계 이후 해결 방법 |
+| 관찰한 한계 | 보완 방법 |
 |---|---|
 | 어떤 버전이 배포돼야 하는지가 Argo CD 안(Application 명세)에만 있습니다. UI에서 바꾸면 Git에 흔적이 남지 않습니다. | values와 Application 정의를 **Git 설정 저장소**로 옮깁니다. |
 | 배포 승인이 "파이프라인을 누가 실행했는가"에 묶여 있습니다. | 설정 저장소의 **PR 승인**이 곧 배포 승인이 됩니다. |
 | 롤백하면 `OutOfSync`가 남고, 누군가 손으로 바꾼 것을 Argo CD가 되돌리지 않습니다. | **자동 Sync와 Self-Heal**로 Git과 클러스터를 항상 일치시킵니다. |
 | 환경이 늘면 Application을 UI에서 하나씩 만들어야 합니다. | **ApplicationSet**으로 환경별 Application을 생성합니다. |
 
-팀이 PR 기반 작업에 익숙해지면 2단계로 넘어갑니다.
+이 보완 방법들은 모두 배포 설정을 Git에 두는 GitOps 방식입니다. 팀이 PR 기반 작업에 익숙해졌을 때 검토해 보세요.
 
 [← 이전](04-first-sync.md) · [목차](../README.md) · [다음: 정리 →](06-cleanup.md)
