@@ -1,0 +1,7 @@
+{
+  "replicaCount": 5,
+  "image": {
+    "repository": "example.invalid/demo-app",
+    "digest": ""
+  }
+}

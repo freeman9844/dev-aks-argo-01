@@ -3,7 +3,9 @@ kind: Rollout
 metadata:
   name: demo-app
 spec:
-  replicas: 5
+  replicas: {{ .Values.replicaCount }}
+  rollbackWindow:
+    revisions: 3
   selector:
     matchLabels:
       app: demo-app
@@ -20,7 +22,7 @@ spec:
     spec:
       containers:
         - name: demo-app
-          image: demo-app
+          image: {{ .Values.image.repository }}@{{ required "image.digest is required" .Values.image.digest }}
           ports:
             - containerPort: 8080
           readinessProbe:
