@@ -2,9 +2,18 @@
 
 **목표:** Argo CD가 비공개 `demo-gitops:demo`를 읽고 v1 Pod 다섯 개를 띄우도록 합니다. CI의 쓰기 ID와 Argo CD의 읽기 ID는 분리합니다.
 
-## 1. Git 읽기 ID 구성
+## 1. Git 읽기용 관리 ID 만들기
 
-👁️ **설명** — 비공개 Azure Repos는 익명 clone을 허용하지 않습니다. Kubernetes 서비스 계정의 토큰을 Azure가 신뢰하도록 연결하면 repo-server가 장기 PAT 없이 저장소를 읽을 수 있습니다. `issuer`는 **어느 클러스터인지**, `subject`는 **그 안의 어느 서비스 계정인지** 제한합니다.
+👁️ **설명** — 비공개 Azure Repos는 익명 clone을 허용하지 않습니다. 이 실습은 PAT나 암호 대신 **사용자 할당 관리 ID**로 저장소를 읽습니다. Argo CD에서 Git을 읽는 구성 요소는 `argocd-repo-server`입니다. 이 Pod의 Kubernetes 서비스 계정 토큰을 Microsoft Entra ID가 신뢰하도록 **페더레이션**하면, Pod는 관리 ID의 토큰을 받아 Azure Repos에 접근합니다. 장기 비밀은 클러스터나 Git 어디에도 저장되지 않습니다.
+
+```mermaid
+flowchart LR
+  sa["argocd-repo-server Pod<br/>서비스 계정 토큰"] -->|"1. 토큰 교환<br/>issuer + subject 일치 확인"| entra["Microsoft Entra ID<br/>관리 ID id-workshop-git-reader"]
+  entra -->|"2. 관리 ID 액세스 토큰"| sa
+  sa -->|"3. 토큰으로 git fetch<br/>demo-gitops Read만"| repos["Azure Repos<br/>demo-gitops:demo"]
+```
+
+페더레이션 자격 증명의 `issuer`는 **어느 클러스터인지**, `subject`는 **그 안의 어느 서비스 계정인지** 제한합니다. 따라서 다른 클러스터나 같은 클러스터의 다른 Pod는 이 관리 ID를 쓸 수 없습니다.
 
 🟢 **실행 · 참가자 PC / PowerShell**, 이어서 **브라우저 / Azure DevOps**
 
@@ -12,27 +21,55 @@
 az aks update -g $rg -n $aks --enable-oidc-issuer --enable-workload-identity
 $reader = az identity create -g $rg -n id-workshop-git-reader | ConvertFrom-Json
 $issuer = az aks show -g $rg -n $aks --query oidcIssuerProfile.issuerUrl -o tsv
-$sa = kubectl get deployment argocd-repo-server -n argocd -o jsonpath='{.spec.template.spec.serviceAccountName}'
-az identity federated-credential create -g $rg --identity-name id-workshop-git-reader -n repo-server --issuer $issuer --subject "system:serviceaccount:argocd:$sa" --audiences api://AzureADTokenExchange
+az identity federated-credential create -g $rg --identity-name id-workshop-git-reader -n argocd-repo-server --issuer $issuer --subject system:serviceaccount:argocd:argocd-repo-server --audiences api://AzureADTokenExchange
 ```
 
-Azure DevOps **Organization settings → Users**에서 관리 ID를 추가합니다. 이름이 같다면 `$reader.principalId`와 대조합니다. 비공개 Repos 읽기가 가능한 Basic 액세스, 실습 프로젝트의 **View project-level information**, `demo-gitops` 저장소의 **Read**만 필요합니다. 프로젝트 전체 Contributors에는 추가하지 않습니다. 조직 정책상 관리 ID 등록이 제한되면 관리자에게 요청하세요.
+첫 줄은 AKS가 서비스 계정 토큰을 발급하는 OIDC 발급자를 공개하고, Pod에 Azure 토큰 정보를 주입하는 워크로드 ID 웹후크를 켭니다. 이미 켜져 있으면 그대로 진행됩니다.
 
-📋 **확인** — Azure의 관리 ID를 만든 것만으로 Azure Repos 권한이 생기지는 않습니다. 조직에 추가한 ID와 `$reader.principalId`, 읽기 권한을 준 저장소를 대조하세요.
+Azure DevOps **Organization settings → Users → Add users**에서 `id-workshop-git-reader`를 검색해 추가합니다. 이름이 같은 항목이 여럿이면 `$reader.principalId`와 대조합니다. 권한은 아래 세 가지만 줍니다.
 
-## 2. repo-server에 ID 연결
+| 항목 | 값 | 이유 |
+|---|---|---|
+| 액세스 수준 | **Basic** | Stakeholder는 비공개 Repos의 코드를 읽을 수 없습니다. |
+| 실습 프로젝트 | **View project-level information**만 Allow | 프로젝트를 찾을 수 있게 합니다. 프로젝트 그룹(Contributors·Readers)에는 추가하지 않습니다. |
+| `demo-gitops` 저장소 | **Read**만 Allow | `demo-app` 소스와 다른 저장소는 읽지 못하게 합니다. |
+
+조직 정책상 관리 ID 등록이 제한되면 관리자에게 요청하세요.
+
+📋 **확인** — Azure에서 관리 ID를 만든 것만으로 Azure Repos 권한이 생기지는 않습니다. 조직에 추가한 ID가 `$reader.principalId`와 같은지, Read 권한을 준 저장소가 `demo-gitops` 하나뿐인지 확인하세요.
+
+## 2. Argo CD 확장 설정으로 관리 ID 연결
+
+👁️ **설명** — `argocd` 네임스페이스의 리소스는 AKS 확장이 관리합니다. 서비스 계정이나 Deployment를 `kubectl annotate/patch`로 직접 고치면, 확장이 업데이트될 때 원래대로 돌아갈 수 있습니다. 그래서 **확장 구성 값**으로 관리 ID를 지정합니다. 그러면 확장이 서비스 계정 주석, Pod 레이블, 환경 변수를 알아서 관리합니다.
 
 🟢 **실행 · 같은 PowerShell**
 
 ```powershell
-kubectl annotate sa $sa -n argocd "azure.workload.identity/client-id=$($reader.clientId)" --overwrite
-kubectl patch deployment argocd-repo-server -n argocd --type merge -p '{"spec":{"template":{"metadata":{"labels":{"azure.workload.identity/use":"true"}}}}}'
-kubectl rollout status deployment/argocd-repo-server -n argocd --timeout=3m
+az k8s-extension update -g $rg --cluster-name $aks --cluster-type managedClusters -n argocd --config azure.workloadIdentity.enabled=true --config "azure.workloadIdentity.clientId=$($reader.clientId)" --yes
+az k8s-extension show -g $rg --cluster-name $aks --cluster-type managedClusters -n argocd --query configurationSettings
+kubectl rollout status deployment/argocd-repo-server -n argocd --timeout=5m
+kubectl get sa argocd-repo-server -n argocd -o jsonpath='{.metadata.annotations.azure\.workload\.identity/client-id}{"\n"}'
+kubectl get deployment argocd-repo-server -n argocd -o jsonpath='{.spec.template.metadata.labels.azure\.workload\.identity/use}{"\n"}'
+```
+
+📋 **확인** — 아래 세 가지를 확인합니다.
+
+- `configurationSettings`에 02에서 넣은 `redis-ha.enabled`, `server.service.type`이 그대로 있고, `azure.workloadIdentity.*` 두 값이 추가됐습니다. `update`는 기존 설정을 지우지 않고 값을 덧붙입니다.
+- 서비스 계정 주석의 값이 `$reader.clientId`와 같습니다.
+- Deployment 레이블 값이 `true`입니다.
+
+확장은 Git을 읽는 `argocd-repo-server`에만 이 client ID를 연결합니다. 다른 Argo CD 구성 요소에는 이 관리 ID가 붙지 않습니다.
+
+이제 저장소를 등록합니다. `$repo`는 03에서 복사한 `demo-gitops` HTTPS 주소입니다.
+
+```powershell
 @{apiVersion='v1';kind='Secret';metadata=@{name='demo-gitops';namespace='argocd';labels=@{'argocd.argoproj.io/secret-type'='repository'}};stringData=@{type='git';project='demo';url=$repo;useAzureWorkloadIdentity='true'}} |
   ConvertTo-Json -Depth 6 | kubectl apply -f -
 ```
 
-이 Secret에는 PAT가 없습니다. 실습에서는 실행 중인 repo-server에 설정을 적용합니다. 장기 운영 환경에서는 확장 업그레이드가 설정을 덮어쓰지 않도록 [확장 구성과 Workload Identity](https://learn.microsoft.com/azure/azure-arc/kubernetes/tutorial-use-gitops-argocd)로 관리하세요.
+이 Secret에는 PAT나 암호가 **없습니다**. `useAzureWorkloadIdentity='true'`는 repo-server가 접속할 때 위 관리 ID로 토큰을 받아 쓰라는 표시입니다.
+
+⚠️ **주의** — 02의 Bicep에는 `azure.workloadIdentity.*` 값이 없습니다. 같은 템플릿을 **다시 배포하면 두 값이 삭제**되고 Git 읽기가 실패합니다(`what-if`에서 `Delete`로 표시됨). 템플릿을 다시 배포했다면 이 절의 `az k8s-extension update`를 다시 실행하세요. 운영 환경에서는 이 두 값을 Bicep의 `configurationSettings`에 함께 선언해 관리합니다. 자세한 내용은 [Argo CD 확장과 워크로드 ID](https://learn.microsoft.com/azure/azure-arc/kubernetes/tutorial-use-gitops-argocd#create-gitops-argo-cd-extension-with-workload-identity)를 참고하세요.
 
 ## 3. Application 생성 및 관찰
 
@@ -91,7 +128,7 @@ kubectl get rollout demo-app -n demo -o jsonpath='{.spec.template.spec.container
 
 첫 출력은 **03의 GitOps 커밋 SHA**, 두 번째 출력의 `@sha256:…` 부분은 **03의 ACR digest**와 같아야 합니다. `Synced`는 명세가 Git과 일치한다는 뜻이지 Pod가 요청에 응답한다는 뜻은 아닙니다. 위 ReplicaSet의 Ready 수까지 확인하세요.
 
-**트러블슈팅:** `ComparisonError`는 Git URL·Read 권한·페더레이션 subject부터, `ImagePullBackOff`는 Git이 아니라 ACR digest·kubelet의 AcrPull부터 확인합니다.
+**트러블슈팅:** `ComparisonError`는 다음 순서로 확인합니다: Git URL → `demo-gitops` Read 권한 → 확장의 `azure.workloadIdentity.clientId` → 페더레이션 subject(`system:serviceaccount:argocd:argocd-repo-server`). `ImagePullBackOff`는 Git 문제가 아닙니다. ACR digest와 kubelet의 AcrPull부터 확인합니다.
 
 **완료 체크:** Git 커밋이 동기화됐고 v1 Pod 5개가 Ready입니다.
 

@@ -13,7 +13,8 @@
 // 이 템플릿이 다루지 않는 것:
 //   - Argo Rollouts 컨트롤러 : 02 단계에서 Helm으로 설치
 //   - CI의 ACR 푸시 권한     : 03 단계에서 Azure DevOps 서비스 연결에 AcrPush 부여
-//   - Argo CD의 Git 읽기 권한 : 04 단계에서 저장소 자격 증명으로 연결
+//   - Argo CD의 Git 읽기 권한 : 04 단계에서 관리 ID + 확장 워크로드 ID 설정(az k8s-extension update)으로 연결
+//     ※ 이 템플릿을 다시 배포하면 04에서 추가한 azure.workloadIdentity.* 설정이 지워지므로 04 §2를 다시 실행합니다.
 //
 // 배포 예시 (실습 전용 새 리소스 그룹에서 실행):
 //   az deployment group what-if -g $rg -f .\infra\main.bicep -p aksName=$aks acrName=$acr
