@@ -3,25 +3,19 @@ trigger:
   branches:
     include: [main]
 
-resources:
-  repositories:
-    - repository: desired
-      type: git
-      name: demo-gitops
-      ref: refs/heads/demo
-      trigger: none
-
 pool:
   vmImage: ubuntu-24.04
 
 jobs:
+  # CI: 테스트 → 이미지 빌드·푸시 → 이미지 digest를 박은 Helm 차트를 ACR(helm/)에 푸시
   - job: Build
     steps:
       - checkout: self
       - bash: python3 -m unittest discover -s tests -v
-        displayName: Test app and GitOps renderer
+        displayName: Test app and chart
       - task: AzureCLI@2
         name: publish
+        displayName: Push image and Helm chart to ACR
         condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
         inputs:
           azureSubscription: demo-acr-push
@@ -35,35 +29,47 @@ jobs:
             docker build --build-arg SOURCE_COMMIT="$BUILD_SOURCEVERSION" -t "$image" .
             docker push "$image"
             digest=$(az acr repository show -n "$ACR_NAME" --image "demo-app:$tag" --query digest -o tsv)
-            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             echo "$BUILD_SOURCEVERSION -> $image -> $digest"
-            echo "##vso[task.setvariable variable=digest;isOutput=true]$digest"
+
+            python3 ci/set_chart_image.py chart/demo-app "$ACR_LOGIN_SERVER/demo-app" "$digest"
+            version="1.0.$BUILD_BUILDID"
+            helm package chart/demo-app --version "$version" --app-version "${BUILD_SOURCEVERSION:0:7}" -d "$AGENT_TEMPDIRECTORY"
+            az acr login --name "$ACR_NAME" --expose-token --query accessToken -o tsv \
+              | helm registry login "$ACR_LOGIN_SERVER" --username 00000000-0000-0000-0000-000000000000 --password-stdin
+            helm push "$AGENT_TEMPDIRECTORY/demo-app-$version.tgz" "oci://$ACR_LOGIN_SERVER/helm"
+            echo "chart: oci://$ACR_LOGIN_SERVER/helm/demo-app:$version"
+            echo "##vso[task.setvariable variable=chartVersion;isOutput=true]$version"
         env:
           ACR_NAME: $(acrName)
           ACR_LOGIN_SERVER: $(acrLoginServer)
 
-  - job: UpdateGit
+  # CD 호출: Argo CD에 "이 차트 버전으로 Sync"를 요청합니다. 실제 배포는 Argo CD가 합니다.
+  - job: Deploy
     dependsOn: Build
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
     variables:
-      digest: $[ dependencies.Build.outputs['publish.digest'] ]
+      chartVersion: $[ dependencies.Build.outputs['publish.chartVersion'] ]
     steps:
-      - checkout: self
-        path: s/app
-      - checkout: desired
-        path: s/desired
-        persistCredentials: true
+      - checkout: none
       - bash: |
           set -euo pipefail
-          python3 ../app/ci/release.py dev "$ACR_LOGIN_SERVER/demo-app" "$DIGEST"
-          kubectl kustomize dev > "$AGENT_TEMPDIRECTORY/rendered.yaml"
-          grep -Fq "image: $ACR_LOGIN_SERVER/demo-app@$DIGEST" "$AGENT_TEMPDIRECTORY/rendered.yaml"
-          git add -- dev/kustomization.yaml
-          if ! git diff --cached --quiet; then
-            git -c user.name='Demo release CI' -c user.email='ci@example.invalid' commit -m "Deploy $BUILD_SOURCEVERSION at $DIGEST"
+          curl -fsSLk -o argocd "https://$ARGOCD_SERVER/download/argocd-linux-amd64"
+          chmod +x argocd
+          ./argocd version --client --short
+          # 토큰·주소가 틀리면 여기서 실패합니다(아래 '앱 없음' 경고와 구분).
+          ./argocd account get-user-info
+          if ! ./argocd app get demo-app > /dev/null; then
+            echo "##vso[task.logissue type=warning]Argo CD Application demo-app이 아직 없습니다. 04 단계에서 Application을 만든 뒤 파이프라인을 다시 실행하세요. (차트 $CHART_VERSION 은 ACR에 푸시됨)"
+            exit 0
           fi
-          git push origin HEAD:refs/heads/demo
-        workingDirectory: $(Pipeline.Workspace)/s/desired
+          ./argocd app set demo-app --revision "$CHART_VERSION"
+          ./argocd app sync demo-app --async
+          # Sync 작업 완료까지만 기다립니다. 카나리는 첫 단계에서 정지(Suspended)하므로 health는 기다리지 않습니다.
+          ./argocd app wait demo-app --sync --operation --timeout 300
+          ./argocd app get demo-app
+        displayName: Request Argo CD sync
         env:
-          ACR_LOGIN_SERVER: $(acrLoginServer)
-          DIGEST: $(digest)
+          ARGOCD_SERVER: $(argocdServer)
+          ARGOCD_AUTH_TOKEN: $(argocdToken)
+          ARGOCD_OPTS: --insecure --grpc-web
+          CHART_VERSION: $(chartVersion)
