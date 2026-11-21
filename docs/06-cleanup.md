@@ -10,14 +10,31 @@
 
 왼쪽 아래 **Log out**을 선택합니다. 로그아웃만으로는 AKS 과금이 멈추지 않습니다. 03에서 만든 `ci` 토큰은 클러스터와 함께 삭제되므로 따로 폐기할 필요가 없습니다.
 
+로그아웃 직후 "사이트에 연결할 수 없음" 같은 오류 화면이 나와도 정상입니다. 확장의 기본 설정(`argocd-cm`의 `url`)이 `https://argocd.example.com`이라 로그아웃 후 그 주소로 이동하기 때문입니다. 공인 IP 주소로 다시 접속하면 로그인 화면이 열리므로 로그아웃이 끝난 것을 확인할 수 있습니다. 탭을 닫고 진행합니다.
+
 🟢 **실행 · 브라우저 / Azure DevOps**
 
 1. **Pipelines → demo-app 파이프라인 → ⋯ → Settings**에서 **Processing of new run requests → Disabled**로 저장합니다. 진행 중인 실행이 없는지 확인합니다.
 
 ![Pipeline settings: Processing of new run requests가 Disabled로 선택됐고 목록 제목 옆에 Disabled 배지가 표시됨](images/06-devops-pipeline-disabled.png)
 
-2. 저장 후 파이프라인 이름 옆에 **Disabled** 배지가 붙으면, 같은 **⋯** 메뉴에서 **Delete**로 파이프라인을 삭제합니다. 파이프라인 변수에 넣었던 `argocdToken`도 함께 사라집니다.
-3. **Project settings → Repositories**에서 `demo-app` 저장소를 삭제합니다. 삭제한 저장소는 휴지통(**Deleted repositories**)에 남으므로 다시 쓸 일이 없으면 거기서도 영구 삭제합니다.
+2. 저장 후 파이프라인 이름 옆에 **Disabled** 배지가 붙으면, 같은 **⋯** 메뉴에서 **Delete**를 선택합니다. 확인 창에 파이프라인 이름 `demo-app`을 입력하고 **Delete**를 누릅니다. 파이프라인 변수에 넣었던 `argocdToken`과 빌드 기록도 함께 사라집니다.
+3. **Project settings → Repositories**에서 `demo-app` 행의 **⋯ → Delete**를 선택하고, 확인 창에 `demo-app`을 입력해 삭제합니다.
+
+삭제한 저장소는 목록에서 사라지지만 휴지통에 30일 동안 보관된 뒤 자동으로 영구 삭제됩니다. 휴지통은 웹 화면에 따로 없습니다. 같은 이름으로 다시 시연할 계획이면 그대로 두어도 됩니다. 바로 영구 삭제하려면 다음 명령을 실행합니다. `<조직>`과 `<프로젝트>`는 Azure DevOps 주소(`https://dev.azure.com/<조직>/<프로젝트>`)에서 확인합니다.
+
+🟢 **실행 · 참가자 PC / PowerShell** (선택)
+
+```powershell
+$devops = "https://dev.azure.com/<조직>/<프로젝트>"
+$headers = @{ Authorization = "Bearer $(az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv)" }
+$bin = "$devops/_apis/git/recycleBin/repositories"
+$id = ((Invoke-RestMethod "${bin}?api-version=7.1-preview.1" -Headers $headers).value | Where-Object name -eq 'demo-app').id
+Invoke-RestMethod -Method Delete "$bin/${id}?api-version=7.1-preview.1" -Headers $headers
+(Invoke-RestMethod "${bin}?api-version=7.1-preview.1" -Headers $headers).value.name
+```
+
+**예상 결과:** 마지막 명령의 출력에 `demo-app`이 없습니다. `499b84ac-…`는 Azure DevOps 리소스의 고정 ID입니다.
 
 서비스 연결 `demo-acr-push`는 아직 지우지 않습니다. 연결이 쓰는 관리 ID에 페더레이션 자격 증명이 남아 있으면 Azure DevOps가 삭제를 거부합니다. 3절에서 그룹과 함께 관리 ID가 사라진 뒤 지웁니다.
 
@@ -49,7 +66,7 @@ az network public-ip list --query "[?ipAddress=='$argocdServer'].id" -o tsv
 
 🟢 **실행 · 브라우저 / Azure DevOps → Project settings → Service connections**
 
-두 그룹이 모두 `false`가 된 뒤 이번 실습의 `demo-acr-push`를 선택하고 **⋮ → Delete**로 삭제합니다. 다른 팀이 쓰는 연결은 건드리지 않습니다.
+두 그룹이 모두 `false`가 된 뒤 이번 실습의 `demo-acr-push`를 선택해 상세 화면을 엽니다. 오른쪽 위 **⋮ → Delete**를 선택하고 확인 창에서 **Delete**를 누릅니다. 목록에서 연결이 사라지면 끝입니다. 다른 팀이 쓰는 연결은 건드리지 않습니다.
 
 ⚠️ `Cannot delete this service connection while federated credentials ... exist` 오류가 나면 관리 ID가 아직 남아 있습니다. 2절의 그룹 삭제가 끝났는지 다시 확인합니다.
 
