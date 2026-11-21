@@ -80,4 +80,15 @@ flowchart LR
 
 ## 검증 기록
 
-**실환경 검증 기록:** Korea Central에서 AKS 노드 2대와 `Microsoft.ArgoCD` 확장(Argo CD v3.5.6)을 배포했습니다. UI에서 만든 Application에 CI가 `ci` 토큰으로 Sync를 요청해 v1 5개가 Ready였습니다. v2 배포 시 v1 4개·v2 1개 상태가 60초 동안 유지됐고, UI Resume 후 v2 5개, UI 롤백 후 카나리 없이 v1 5개(OutOfSync), 되돌림 커밋과 CI 후 Synced·v1 5개를 확인했습니다. `ci` 토큰으로 Application 삭제는 거부(403)됐습니다. 실습 그룹과 AKS 노드 그룹은 삭제했습니다. 참가자의 구독 할당량·조직 정책·권한에 따라 결과가 달라질 수 있습니다.
+**실환경 검증 기록:** 2026-11-21 Korea Central에서 교재 02~05를 처음부터 순서대로 실행했습니다. 환경은 AKS 노드 2대와 `Microsoft.ArgoCD` 확장(Argo CD v3.5.6)입니다. 화면 캡처도 이 실행에서 찍었습니다.
+
+- UI로 만든 Application에 CI가 `ci` 토큰으로 Sync를 요청했고, v1 5개가 Ready였습니다. History 요청자는 `ci`였습니다.
+- v2 커밋 뒤 v1 4개·v2 1개가 60초 넘게 유지됐습니다. UI Resume 후에는 v2 5개가 됐습니다.
+- History Rollback 후 카나리 정지 없이 v1 5개가 됐습니다(`OutOfSync`, 요청자 `admin`).
+- 되돌림 커밋, CI, Resume 뒤에는 `Synced Healthy ci`와 v1 5개를 확인했습니다.
+- `ci` 계정의 권한 조회 결과는 get·update·sync가 `yes`, delete·create가 `no`였습니다.
+- 이 실행에서 교재를 두 군데 고쳤습니다.
+  - 서비스 연결 저장 시 자동으로 부여되는 Contributor를 제거하는 단계를 추가했습니다(03).
+  - Argo CD 트리에 ReplicaSet·Pod가 보이도록 AppProject 허용 종류를 보강했습니다(04).
+
+실습 그룹과 AKS 노드 그룹은 삭제했습니다. 참가자의 구독 할당량·조직 정책·권한에 따라 결과가 달라질 수 있습니다.

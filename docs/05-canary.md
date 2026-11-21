@@ -9,7 +9,12 @@
 🟢 **실행 · 브라우저 / Azure DevOps → Repos → demo-app → Files**
 
 1. `app/VERSION`을 열고 **Edit**를 누릅니다.
-2. 값 `v1`을 `v2`로 바꾸고 **Commit**합니다(브랜치 `main`).
+2. 값 `v1`을 `v2`로 바꾸고 오른쪽 위 **Commit**을 누릅니다. 창이 열리면 **Branch name**이 `main`인지 확인하고 아래쪽 **Commit**을 누릅니다.
+
+   ![Commit 창: Comment Updated VERSION, Branch name main](images/05-devops-commit-dialog.png)
+
+   *그림: 편집기 줄 1이 `v2`입니다. Comment는 기본값 `Updated VERSION` 그대로 둬도 됩니다.*
+
 3. **Pipelines**에서 이 커밋으로 **자동 실행 한 건**이 시작되는지 봅니다. 1~2분 걸릴 수 있습니다. 같은 커밋으로 수동 실행을 추가하지 마세요.
 
 파이프라인의 `Deploy` Job은 Sync를 요청하고 **Sync가 끝날 때까지만** 기다립니다. 카나리 승격까지 기다리지 않으므로 Rollout이 정지 상태여도 파이프라인은 성공으로 끝납니다.
@@ -34,6 +39,10 @@ demo-app-<신규 해시>          1         1       1
 ### Argo CD 화면에서 정지와 실패 구분하기
 
 Argo CD UI에서 **Applications → demo-app**을 엽니다. **SYNC STATUS**는 `Synced`이고 **APP HEALTH**는 `Suspended`입니다. 트리의 `rollout` 노드에도 정지 표시가 붙고, ReplicaSet 두 개가 각각 Pod 4개와 1개를 거느립니다.
+
+![Suspended 상태의 트리: rev:2 ReplicaSet에 Pod 1개, rev:1 ReplicaSet에 Pod 4개](images/05-argocd-suspended.png)
+
+*그림: 위쪽 `rs`(rev:2)가 v2 카나리 1개, 아래쪽 `rs`(rev:1)가 v1 4개입니다. Sync는 `Synced to 1.0.<v2 빌드 ID>`로 이미 끝났습니다.*
 
 새 차트는 이미 클러스터에 반영됐고 Rollouts가 사람의 승격을 기다리는 상태입니다. **SYNC를 다시 누르는 것은 승격이 아닙니다.**
 
@@ -61,7 +70,11 @@ foreach ($rs in $sets | Where-Object { $_.status.readyReplicas -gt 0 }) {
 🟢 **실행 · 브라우저 / Argo CD UI → Applications → demo-app**
 
 1. 트리에서 `rollout` 노드 오른쪽의 **⋮**를 누릅니다.
-2. **Resume**을 선택하고 확인 창에서 **OK**를 누릅니다.
+2. **Resume**을 선택하고 `Perform resume action?` 확인 창에서 **OK**를 누릅니다.
+
+![rollout 노드의 ⋮ 메뉴: Abort, Pause, Promote-Full, Restart Pods, Resume 등](images/05-argocd-resume-menu.png)
+
+*그림: 아래쪽 Rollouts 전용 동작 중 **Resume**을 고릅니다. **Promote-Full**은 남은 단계를 건너뛰고 바로 100%로 보내는 동작이라 이번 실습에서는 쓰지 않습니다.*
 
 🟢 **실행 · 참가자 PC / PowerShell**
 
@@ -80,8 +93,12 @@ kubectl get rs -n demo -l app=demo-app
 
 🟢 **실행 · 브라우저 / Argo CD UI → Applications → demo-app → HISTORY AND ROLLBACK**
 
-1. 목록에서 v1이었던 차트 버전(04에서 확인한 `1.0.<빌드 ID>`) 항목을 찾습니다. 항목마다 배포 시각, 차트 버전, 요청자가 보입니다.
-2. 그 항목의 **⋮ → Rollback**을 누르고 확인 창에서 **OK**를 누릅니다.
+1. 목록에서 v1이었던 차트 버전(04에서 확인한 `1.0.<빌드 ID>`) 항목을 찾습니다. 최신 배포가 맨 위에 있고, 항목마다 배포 시각, 차트 버전(Revision), 요청자(Initiated by)가 보입니다.
+2. 그 항목 오른쪽 위의 **⋮ → Rollback**을 누르고 `Rollback application` 확인 창에서 **OK**를 누릅니다.
+
+![History 패널: 1.0.28과 1.0.27 두 항목, 아래 항목의 ⋮ 메뉴에 Rollback](images/05-argocd-rollback-menu.png)
+
+*그림: 두 항목의 Description은 차트 설명이라 같습니다. Revision 값으로 구분합니다.*
 
 🟢 **실행 · 참가자 PC / PowerShell**
 
@@ -91,6 +108,10 @@ kubectl get application demo-app -n argocd -o jsonpath='{.status.sync.status} {.
 ```
 
 **예상 결과:** 수십 초 안에 **v1 Ready 5개**·v2 0개, 두 번째 명령은 `OutOfSync admin`입니다.
+
+![롤백 뒤 화면: APP HEALTH Healthy, SYNC STATUS OutOfSync from 1.0.28, LAST SYNC Sync OK to 1.0.27](images/05-argocd-after-rollback.png)
+
+*그림: 클러스터는 `1.0.27`(LAST SYNC)로 돌아갔지만 Application 명세는 여전히 `1.0.28`을 가리키므로 `OutOfSync`입니다.*
 
 ⚠️ **롤백 뒤 상태를 이해하세요.**
 
@@ -117,7 +138,7 @@ kubectl argo rollouts status demo-app -n demo --timeout 5m
 kubectl get application demo-app -n argocd -o jsonpath='{.status.sync.revision} {.status.sync.status} {.status.health.status} {.status.history[-1:].initiatedBy.username}{"\n"}'
 ```
 
-**예상 결과:** `1.0.<새 빌드 ID> Synced Healthy ci`, Pod 5개 모두 `/version` 응답이 `v1`이고 `commit`은 방금 만든 커밋입니다. 2절의 명령으로 확인할 수 있습니다.
+**예상 결과:** `1.0.<새 빌드 ID> Synced Healthy ci`입니다. 2절의 명령을 다시 실행하면 응답이 한 줄이고 `v1`, `commit`은 방금 만든 커밋입니다. 승격 직후 30초쯤은 이전 Pod가 종료 중이라 `kubectl get pods`에 더 많이 보일 수 있습니다.
 
 **트러블슈팅**
 
