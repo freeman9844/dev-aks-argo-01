@@ -6,13 +6,14 @@ metadata:
 spec:
   project: demo
   source:
-    repoURL: 'GITOPS_REPO_URL'
-    targetRevision: demo
-    path: dev
+    repoURL: ACR_LOGIN_SERVER/helm
+    chart: demo-app
+    # 첫 생성용 범위입니다. 이후에는 CI가 argocd app set --revision 으로 정확한 버전을 지정합니다.
+    targetRevision: '1.0.*'
   destination:
     server: https://kubernetes.default.svc
     namespace: demo
+  # 자동 Sync는 쓰지 않습니다. 배포는 CI의 Sync 호출(또는 UI의 SYNC 버튼)로만 일어납니다.
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

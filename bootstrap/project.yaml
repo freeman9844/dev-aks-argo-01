@@ -4,8 +4,9 @@ metadata:
   name: demo
   namespace: argocd
 spec:
+  # ACR의 helm/ 경로에 있는 OCI Helm 차트만 소스로 허용합니다.
   sourceRepos:
-    - 'GITOPS_REPO_URL'
+    - ACR_LOGIN_SERVER/helm
   destinations:
     - namespace: demo
       server: https://kubernetes.default.svc
