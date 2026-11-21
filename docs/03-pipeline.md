@@ -25,6 +25,10 @@ GitOps 저장소 루트에는 `dev/kustomization.yaml`이 보여야 합니다. s
 
 📋 **확인** — 브라우저의 브랜치 선택기를 확인하세요. 앱 쪽은 **main → `azure-pipelines.yml`**, GitOps 쪽은 **demo → `dev/kustomization.yaml`**이 보여야 합니다. 지금은 이미지 이름이 `example.invalid`인 것이 정상입니다. 첫 CI가 이 값을 교체합니다.
 
+![Azure Repos의 demo-app 저장소 main 브랜치 파일 목록: 루트에 azure-pipelines.yml과 앱 소스가 있음](images/03-devops-repo-app.png)
+
+*03·06의 Azure DevOps 그림은 실습을 마친 실제 프로젝트에 Playwright로 접속해 촬영했습니다. 따라서 파이프라인에 **Disabled** 배지가 보이고, GitOps 파일에는 이미 실제 digest가 들어 있습니다. 조직·사용자 이름과 GUID는 `contoso` 계열 값으로 바꾸거나 가렸습니다.*
+
 ## 2. CI 권한 구성
 
 👁️ **설명** — 한 번의 빌드에 두 ID가 쓰입니다. ACR에 쓰는 ID는 **서비스 연결**의 ID이고, Git에 쓰는 ID는 **프로젝트 Build Service**입니다. 이미지 푸시가 성공하고 Git 푸시만 실패했다면 ACR 권한을 넓혀도 해결되지 않습니다.
@@ -37,6 +41,12 @@ GitOps 저장소 루트에는 `dev/kustomization.yaml`이 보여야 합니다. s
 | Repos → `demo-gitops` → Branches → `demo` → Branch security | `<프로젝트> Build Service (<조직>)`에 Read와 Contribute를 허용합니다. Force push와 정책 우회는 허용하지 않습니다. ID가 없다면 첫 실행 후 다시 조회합니다. |
 | Pipelines 설정 | job authorization을 현재 프로젝트와 명시적으로 참조한 저장소로 제한합니다. 실습 운영자만 파이프라인을 편집·실행하도록 하고 보호된 리소스 사용 승인은 해당 파이프라인에만 부여합니다. |
 
+Branch security는 **Repos → Branches**에서 `demo-gitops`를 고른 뒤 `demo` 행의 **⋯ → Branch security**로 엽니다. 왼쪽 **Users**에서 Build Service ID를 선택하면 오른쪽에 권한이 나옵니다.
+
+![demo-gitops의 demo 브랜치 보안 패널: Build Service ID의 Contribute는 Allow이고 Force push와 정책 우회는 Not set](images/03-devops-branch-security.png)
+
+Contribute가 `Allow (inherited)`가 아니라 **`Allow`** 로 보여야 이 브랜치에 명시적으로 부여한 것입니다. Force push와 Bypass policies는 `Not set`으로 남겨 둡니다.
+
 ## 3. 실행하고 digest 비교
 
 🟢 **실행 · 브라우저 / Pipelines → New pipeline**
@@ -47,7 +57,19 @@ GitOps 저장소 루트에는 `dev/kustomization.yaml`이 보여야 합니다. s
 
 **예상 결과:** `Build`의 `publish` 로그에 SHA·태그·digest가 보이고, `UpdateGit`이 성공합니다. `demo-gitops:demo`의 `dev/kustomization.yaml`에서 `images[0].digest`가 로그와 같은지 확인합니다. 이 시점에는 **아직 앱이 배포되지 않았습니다.**
 
+![demo-release 실행 목록: 성공 3건과 실패 2건, 실행마다 트리거 종류와 커밋 SHA 표시](images/03-devops-pipeline-runs.png)
+
+실행 목록의 실패 2건은 실습 중 실제로 만난 오류입니다. `#20261121.1`은 Build Service 권한 누락(`TF401027`)이고, `#20261121.3`은 같은 커밋으로 수동 실행과 자동 실행(Batched CI)이 겹친 경우입니다. 둘 다 아래 트러블슈팅에서 다룹니다.
+
+![실행 #20261121.5 요약: Build와 UpdateGit 두 Job이 모두 성공](images/03-devops-run-summary.png)
+
+![Build Job의 publish 로그: 커밋 SHA, 이미지 태그와 함께 sha256 digest가 출력됨](images/03-devops-publish-log.png)
+
 📋 **확인 · 같은 이미지인가요?** `Repos → Files → demo-gitops → demo`에서 `dev/kustomization.yaml`의 `newName`과 `digest`를 확인하세요. 아래 명령은 *실제 ACR에 게시된* digest 목록을 반환합니다. 파일의 값이 이 목록에 있어야 합니다.
+
+![demo-gitops demo 브랜치의 dev/kustomization.yaml: newName은 실습 ACR의 demo-app, digest는 publish 로그와 같은 sha256 값](images/03-devops-gitops-kustomization.png)
+
+위 두 그림의 digest는 모두 `sha256:e9e51f…`로 시작합니다. 파이프라인이 ACR에 올린 이미지와 정확히 같은 digest를 Git에 기록했다는 뜻입니다.
 
 ```powershell
 az acr manifest list-metadata -r $acr -n demo-app --query "[].digest" -o tsv
