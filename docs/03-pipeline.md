@@ -21,14 +21,40 @@ git push $appUrl HEAD:refs/heads/main
 
 ## 2. ACR 서비스 연결
 
-👁️ **설명** — 파이프라인이 ACR에 이미지와 차트를 push할 때 쓰는 ID입니다. Argo CD를 부르는 `ci` 토큰과는 별개입니다. 이미지 push가 실패하면 이 연결을, Sync 요청이 실패하면 `ci` 토큰을 봅니다.
+👁️ **설명** — 파이프라인이 ACR에 이미지와 차트를 push할 때 쓰는 ID입니다. 02에서 Bicep이 만든 관리 ID `id-ci-<AKS 이름>`이 **이 ACR 하나에 대해서만 `AcrPush`**를 가지고 있습니다. 서비스 연결을 **Managed identity** 방식으로 만들면 Azure DevOps가 이 ID에 페더레이션 자격 증명을 자동으로 추가합니다. 비밀번호도 앱 등록도 필요 없습니다. Argo CD를 부르는 `ci` 토큰과는 별개이므로, 이미지 push가 실패하면 이 연결을, Sync 요청이 실패하면 `ci` 토큰을 봅니다.
 
-🟢 **실행 · 브라우저 / Project settings**
+🟢 **실행 · 참가자 PC / PowerShell** — 고를 관리 ID 이름을 확인합니다.
 
-| 대상 | 설정 |
-|---|---|
-| Service connections | Azure Resource Manager 연결 `demo-acr-push`: Workload identity federation으로 인증하고 해당 ID에 **실습 ACR의 AcrPush만** 부여합니다. 구독 Contributor는 필요 없습니다. 이름은 YAML의 `azureSubscription: demo-acr-push`와 같아야 합니다. |
-| Pipelines 설정 | job authorization을 현재 프로젝트로 제한합니다. 실습 운영자만 파이프라인을 편집·실행하도록 하고, 보호된 리소스 사용 승인은 해당 파이프라인에만 부여합니다. |
+```powershell
+az deployment group show -g $rg -n demo-infra --query properties.outputs.ciIdentityName.value -o tsv
+```
+
+🟢 **실행 · 브라우저 / Azure DevOps → Project settings → Service connections → New service connection**
+
+1. **Azure Resource Manager**를 고르고 **Next**를 누릅니다.
+2. Identity type에서 **Managed identity**를 고릅니다.
+
+| 구역 | 항목 | 값 |
+|---|---|---|
+| Step 1: Managed identity details | Subscription for Managed Identity | 실습 구독 |
+| Step 1 | Resource group for Managed Identity | 02의 `$rg` |
+| Step 1 | Managed Identity | 위에서 확인한 `id-ci-<AKS 이름>` |
+| Step 2: Azure Scope | Scope Level | `Subscription` |
+| Step 2 | Subscription for service connection | 실습 구독 |
+| Step 2 | Resource group for service connection | 02의 `$rg` |
+| Step 3: Service connection details | Service Connection Name | `demo-acr-push` — YAML의 `azureSubscription: demo-acr-push`와 같아야 합니다. |
+| Security | Grant access permission to all pipelines | **체크하지 않습니다.** 4절 첫 실행 때 이 파이프라인만 승인합니다. |
+
+3. **Save**를 누릅니다.
+
+📋 **확인** — 목록에 `demo-acr-push`가 보이고, PC에서 아래 명령의 결과가 1 이상입니다. Azure DevOps가 관리 ID에 페더레이션 자격 증명을 추가했다는 뜻입니다.
+
+```powershell
+$ciId = az deployment group show -g $rg -n demo-infra --query properties.outputs.ciIdentityName.value -o tsv
+az identity federated-credential list -g $rg --identity-name $ciId --query "length(@)"
+```
+
+⚠️ **주의** — 연결 화면의 범위(리소스 그룹)는 *어디를 대상으로 하는 연결인지*를 적는 값일 뿐 권한을 주지 않습니다. 실제 권한은 Bicep이 준 ACR 범위 `AcrPush` 하나뿐입니다. 구독 Contributor 같은 넓은 역할을 추가하지 마세요.
 
 ## 3. Argo CD에서 `ci` 토큰 만들기
 
@@ -91,7 +117,8 @@ az acr repository show-tags -n $acr --repository helm/demo-app -o tsv
 
 | 증상 | 원인과 조치 |
 |---|---|
-| `Build`의 push에서 `unauthorized` | 서비스 연결 ID에 실습 ACR의 `AcrPush`가 있는지 확인합니다. Argo CD 토큰과는 무관합니다. |
+| `Build`의 push에서 `unauthorized` | 서비스 연결이 `id-ci-<AKS 이름>`을 가리키는지, 그 ID에 실습 ACR의 `AcrPush`가 있는지 확인합니다. Argo CD 토큰과는 무관합니다. |
+| `Build`의 Azure 로그인에서 `AADSTS700213`·`No matching federated identity` | 2절 확인 명령의 결과가 0입니다. 서비스 연결을 삭제하고 2절을 다시 수행합니다. |
 | `Deploy`가 `curl`에서 실패 | `argocdServer`에 `https://`나 공백이 없는지, 02의 공인 IP가 그대로인지 확인합니다. |
 | `Deploy`가 `account get-user-info`에서 실패 | 토큰이 틀렸거나 만료됐습니다. 3절에서 새로 만들어 `argocdToken`을 바꿉니다. |
 | Application이 있는데 `PermissionDenied` | 계정 `ci`의 권한이 템플릿과 다릅니다. 확장 설정은 직접 고치지 말고 02의 배포 명령을 다시 실행합니다. |

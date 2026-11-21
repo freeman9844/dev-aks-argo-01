@@ -13,9 +13,11 @@ flowchart TB
     ext["AKS 확장 · Microsoft.ArgoCD<br/>LoadBalancer · 계정 ci"]
     acr["ACR Basic · acrargo…<br/>demo-app 이미지 · helm/demo-app 차트"]
     mi["관리 ID · id-argocd-…"]
+    ci["관리 ID · id-ci-…"]
     aks -->|"확장의 설치 대상"| ext
     ext -->|"argocd-repo-server가 이 ID로 토큰 교환"| mi
     mi -->|"ACR 범위 AcrPull · 차트 pull"| acr
+    ci -->|"ACR 범위 AcrPush · Azure DevOps 서비스 연결이 사용"| acr
   end
   subgraph managed["AKS가 만드는 노드 리소스 그룹 · 실제 이름은 nodeResourceGroup에서 조회"]
     pool["시스템 노드 풀의 VM Scale Set<br/>Linux · Standard_D4s_v5 × 2"]
@@ -40,7 +42,7 @@ flowchart TB
 |---|---|---|---|
 | kubelet 관리 ID | ACR 범위 `AcrPull` | 노드가 **이미지**를 pull | Bicep(AKS가 자동 생성, 역할만 Bicep) |
 | `id-argocd-<AKS 이름>` | ACR 범위 `AcrPull` | `argocd-repo-server`가 **Helm 차트**를 pull | Bicep(관리 ID, 페더레이션, 역할) |
-| CI 서비스 연결의 ID | ACR 범위 `AcrPush` | 파이프라인이 이미지와 차트를 push | [03](03-pipeline.md) |
+| `id-ci-<AKS 이름>` | ACR 범위 `AcrPush` | 파이프라인이 이미지와 차트를 push | Bicep(관리 ID, 역할). 페더레이션은 [03](03-pipeline.md)에서 서비스 연결을 만들 때 Azure DevOps가 추가 |
 
 Argo CD의 관리 ID에는 비밀 값이 없습니다. AKS가 `argocd-repo-server` 서비스 계정에 발급한 토큰을 Microsoft Entra ID가 **페더레이션 자격 증명**(발급자 = 이 클러스터, 주체 = `system:serviceaccount:argocd:argocd-repo-server`)으로 확인하고, 그 대가로 관리 ID 토큰을 줍니다. 그래서 다른 클러스터나 다른 Pod는 이 ID를 쓸 수 없습니다.
 
@@ -62,7 +64,7 @@ $params = @("aksName=$aks","acrName=$acr")
 az deployment group what-if -g $rg -f .\infra\main.bicep -p @params
 ```
 
-📋 **확인** — 미리 보기에 AKS, ACR, `Microsoft.ArgoCD` 확장, 관리 ID `id-argocd-<AKS 이름>`과 그 페더레이션 자격 증명, AcrPull 역할 할당 2개가 신규(`+ Create`)로 표시되어야 합니다.
+📋 **확인** — 미리 보기에 AKS, ACR, `Microsoft.ArgoCD` 확장, 관리 ID `id-argocd-<AKS 이름>`과 그 페더레이션 자격 증명, 관리 ID `id-ci-<AKS 이름>`, AcrPull 역할 할당 2개, AcrPush 역할 할당 1개가 신규(`+ Create`)로 표시되어야 합니다.
 
 ⚠️ **주의** — 아래 `create`부터 노드와 디스크 비용이 발생합니다. 기존 자원 수정·삭제가 보이면 중단하세요. 확장 설치는 AKS 생성 뒤 몇 분 더 걸리므로 전체 배포는 10~15분 정도입니다.
 
@@ -82,7 +84,7 @@ az resource list -g $rg --query "[].{Name:name,Type:type}" -o table
 az resource list -g $nodeGroup --query "[].{Name:name,Type:type}" -o table
 ```
 
-첫 목록에서는 `managedClusters`, `registries`, `userAssignedIdentities`를, 두 번째에서는 `virtualMachineScaleSets`와 네트워크 리소스를 찾습니다. **노드 2대는 VM Scale Set 두 개가 아니라 하나의 집합에 속한 인스턴스 두 개**입니다. 노드 그룹 리소스를 직접 수정하거나 개별 삭제하지 않습니다.
+첫 목록에서는 `managedClusters`, `registries`, `userAssignedIdentities` 2개를, 두 번째에서는 `virtualMachineScaleSets`와 네트워크 리소스를 찾습니다. **노드 2대는 VM Scale Set 두 개가 아니라 하나의 집합에 속한 인스턴스 두 개**입니다. 노드 그룹 리소스를 직접 수정하거나 개별 삭제하지 않습니다.
 
 ## 2. 클러스터 연결과 Rollouts 설치
 

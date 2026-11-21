@@ -17,8 +17,9 @@
 ![Pipeline settings: Processing of new run requests가 Disabled로 선택됐고 목록 제목 옆에 Disabled 배지가 표시됨](images/06-devops-pipeline-disabled.png)
 
 2. 저장 후 파이프라인 이름 옆에 **Disabled** 배지가 붙으면, 같은 **⋯** 메뉴에서 **Delete**로 파이프라인을 삭제합니다. 파이프라인 변수에 넣었던 `argocdToken`도 함께 사라집니다.
-3. **Project settings → Service connections**에서 이번 실습의 `demo-acr-push`를 삭제합니다. 다른 팀이 쓰는 연결은 건드리지 않습니다.
-4. **Project settings → Repositories**에서 `demo-app` 저장소를 삭제합니다. 삭제한 저장소는 휴지통(**Deleted repositories**)에 남으므로 다시 쓸 일이 없으면 거기서도 영구 삭제합니다.
+3. **Project settings → Repositories**에서 `demo-app` 저장소를 삭제합니다. 삭제한 저장소는 휴지통(**Deleted repositories**)에 남으므로 다시 쓸 일이 없으면 거기서도 영구 삭제합니다.
+
+서비스 연결 `demo-acr-push`는 아직 지우지 않습니다. 연결이 쓰는 관리 ID에 페더레이션 자격 증명이 남아 있으면 Azure DevOps가 삭제를 거부합니다. 3절에서 그룹과 함께 관리 ID가 사라진 뒤 지웁니다.
 
 ## 2. 삭제 대상 확인
 
@@ -43,6 +44,14 @@ az network public-ip list --query "[?ipAddress=='$argocdServer'].id" -o tsv
 **예상 결과:** 두 그룹 모두 `false`이고, 마지막 명령은 아무것도 출력하지 않습니다. 즉 Argo CD 공인 IP도 사라졌습니다. 02에서 만든 임시 kubeconfig(`$env:KUBECONFIG`)도 더 필요 없으면 그 파일만 지웁니다.
 
 **트러블슈팅:** 삭제 중 `true`이면 `az group show -n $rg --query properties.provisioningState`로 확인합니다. `Deleting`이면 아직 진행 중입니다.
+
+## 3. 서비스 연결 삭제
+
+🟢 **실행 · 브라우저 / Azure DevOps → Project settings → Service connections**
+
+두 그룹이 모두 `false`가 된 뒤 이번 실습의 `demo-acr-push`를 선택하고 **⋮ → Delete**로 삭제합니다. 다른 팀이 쓰는 연결은 건드리지 않습니다.
+
+⚠️ `Cannot delete this service connection while federated credentials ... exist` 오류가 나면 관리 ID가 아직 남아 있습니다. 2절의 그룹 삭제가 끝났는지 다시 확인합니다.
 
 📋 **완료 체크**
 

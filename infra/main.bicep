@@ -10,13 +10,15 @@
 //   5. Argo CD용 관리 ID       - Argo CD가 ACR에서 Helm 차트를 읽을 때 쓰는 ID
 //      + 페더레이션 자격 증명  - argocd-repo-server ServiceAccount를 이 관리 ID와 연결
 //      + AcrPull 역할 할당     - 이 관리 ID가 ACR을 읽는 권한
+//   6. CI용 관리 ID           - Azure DevOps 서비스 연결이 ACR에 푸시할 때 쓰는 ID
+//      + AcrPush 역할 할당     - 이 관리 ID가 ACR에 이미지·차트를 쓰는 권한
 //
 // 노드 VM Scale Set, 가상 네트워크, Load Balancer·공인 IP는 AKS가 별도의
 // "노드 리소스 그룹(MC_...)"에 자동으로 만들며, 이 파일에는 선언하지 않습니다.
 //
 // 이 템플릿이 다루지 않는 것:
 //   - Argo Rollouts 컨트롤러 : 02 단계에서 Helm으로 설치
-//   - CI의 ACR 푸시 권한     : 03 단계에서 Azure DevOps 서비스 연결에 AcrPush 부여
+//   - CI 관리 ID의 페더레이션 : 03 단계에서 서비스 연결(Managed identity)을 만들 때 Azure DevOps가 자동 생성
 //   - ci 계정의 API 토큰     : 03 단계에서 Argo CD UI로 생성(계정과 권한만 여기서 선언)
 //
 // ⚠️ 실습 단순화를 위해 Argo CD UI/API를 공인 IP(LoadBalancer)로 공개합니다.
@@ -146,7 +148,7 @@ resource acr 'Microsoft.ContainerRegistry/registries@2025-11-01' = {
   sku: { name: 'Basic' }
   properties: {
     // 공유 관리자 계정(사용자 이름/암호)을 끕니다. 접근은 Entra ID와 RBAC 역할로만 허용합니다.
-    //   - CI 푸시   : Azure DevOps 서비스 연결 ID에 AcrPush (03 단계)
+    //   - CI 푸시   : CI용 관리 ID에 AcrPush (아래 6번, 03 단계 서비스 연결이 사용)
     //   - AKS pull  : kubelet 관리 ID에 AcrPull (아래 4번)
     adminUserEnabled: false
     // 기존 레지스트리 단위 RBAC 모드. AcrPull/AcrPush 역할이 레지스트리 전체에 그대로 적용됩니다.
@@ -206,6 +208,27 @@ resource argocdPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+// ----- 6. CI → ACR 푸시용 관리 ID -------------------------------------------------
+
+// Azure DevOps 파이프라인이 ACR에 이미지와 Helm 차트를 푸시할 때 쓰는 사용자 할당 관리 ID입니다.
+// 03 단계에서 서비스 연결을 "Managed identity" 방식으로 만들며 이 ID를 고르면, Azure DevOps가
+// 이 ID에 페더레이션 자격 증명을 자동으로 추가합니다. 비밀번호나 앱 등록이 필요 없습니다.
+resource ciIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-ci-${aksName}'
+  location: location
+}
+
+// 기본 제공 역할 AcrPush(이미지 읽기·쓰기)의 역할 정의 ID입니다. 구독 Contributor 대신 이 ACR 하나에만 줍니다.
+var pushRole = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8311e382-0749-4cb8-b61a-304f252e45ec')
+resource ciPush 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, ciIdentity.id, pushRole)
+  scope: acr
+  properties: {
+    roleDefinitionId: pushRole
+    principalType: 'ServicePrincipal'
+    principalId: ciIdentity.properties.principalId
+  }
+}
 // ----- 출력 ---------------------------------------------------------------------
 
 // 이후 단계에서 쓰는 값입니다. acrLoginServer는 03 단계 파이프라인 변수 acrLoginServer와 같은 값입니다.
@@ -214,3 +237,5 @@ output acrLoginServer string = acr.properties.loginServer
 output acrId string = acr.id
 // 02에서 repo-server Pod의 AZURE_CLIENT_ID와 비교해 워크로드 ID 연결을 확인합니다.
 output argocdIdentityClientId string = argocdIdentity.properties.clientId
+// 03에서 서비스 연결을 만들 때 고르는 CI용 관리 ID 이름입니다.
+output ciIdentityName string = ciIdentity.name
