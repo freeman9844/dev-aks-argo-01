@@ -116,6 +116,30 @@ kubectl get crd rollouts.argoproj.io
 
 ①과 ②만 있으면 repo-server는 관리 ID를 **쓰려고는 하지만** Entra ID가 토큰 교환을 거절합니다. ③은 "발급자(이 클러스터의 OIDC 주소) + 주체(`system:serviceaccount:argocd:argocd-repo-server`)가 일치하는 토큰만 받아 준다"는 신뢰 관계입니다. 비밀번호나 키를 저장하지 않으므로 교체할 값도 없습니다.
 
+**왜 비밀번호 대신 페더레이션인가요?** ACR 사용자 이름과 비밀번호를 Argo CD 저장소 설정에 넣어도 차트는 읽힙니다. 하지만 그 값은 Kubernetes Secret에 남고, 유출되면 어디서든 쓸 수 있으며, 만료 전에 사람이 교체해야 합니다. 페더레이션을 쓰면 클러스터 밖으로 나가는 장기 비밀 값이 없습니다. Pod가 받는 토큰은 약 1시간 뒤 만료되고, **이 클러스터의 이 서비스 계정**이 아니면 교환되지 않습니다.
+
+**토큰 교환은 이렇게 일어납니다.** 04에서 저장소를 연결하거나 Sync할 때마다 아래 순서가 반복됩니다.
+
+```mermaid
+sequenceDiagram
+  participant RS as argocd-repo-server Pod
+  participant AKS as AKS OIDC 발급자
+  participant AAD as Microsoft Entra ID
+  participant ACR as ACR helm/demo-app
+  AKS->>RS: 1. 서비스 계정 토큰을 Pod 안 파일로 주입(주체 = system:serviceaccount:argocd:argocd-repo-server)
+  RS->>AAD: 2. 관리 ID(client ID)의 토큰 요청 + 서비스 계정 토큰 제출
+  AAD->>AKS: 3. 발급자 주소에서 공개 키를 받아 서명 검증
+  AAD->>AAD: 4. 페더레이션 자격 증명의 발급자·주체·대상과 비교
+  AAD-->>RS: 5. 관리 ID의 Entra ID 토큰 발급
+  RS->>ACR: 6. Entra ID 토큰을 ACR 토큰으로 바꿔 차트 pull(AcrPull)
+```
+
+그림의 4단계에서 비교할 기준이 바로 이 절에서 만드는 ③입니다. ③이 없으면 4단계에서 멈추고 `AADSTS70025` 오류가 납니다.
+
+**②는 Pod 안에서 무엇을 하나요?** 서비스 계정에 client ID 어노테이션이 있으면 AKS의 워크로드 ID 웹후크가 repo-server Pod를 만들 때 환경 변수 `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`과 토큰 파일 볼륨을 넣어 줍니다. Argo CD는 이 값을 읽어 그림의 2단계를 수행합니다. 1절에서 확장을 설치할 때 이미 주입이 끝났으므로, 지금 ③을 추가해도 Pod를 다시 만들 필요가 없습니다.
+
+**노드(kubelet) ID를 쓰면 안 되나요?** kubelet ID는 노드가 **이미지**를 pull할 때만 쓰입니다. repo-server는 Pod 안에서 Helm 차트를 직접 내려받으므로 kubelet ID를 사용하지 않습니다. Argo CD가 ACR 차트에 지원하는 인증도 사용자 이름·비밀번호와 워크로드 ID 두 가지뿐입니다.
+
 🟢 **실행 · 같은 PowerShell** — 먼저 ②가 ①과 같은 ID를 가리키는지 봅니다. 두 값이 같아야 합니다.
 
 ```powershell
@@ -133,6 +157,16 @@ az identity federated-credential list -g $rg --identity-name $argocdId -o table
 ```
 
 📋 **확인** — `$issuer`는 `https://koreacentral.oic.prod-aks.azure.com/...`처럼 끝이 `/`인 주소이고, 마지막 목록은 **비어 있어야** 합니다.
+
+👁️ **설명 · 명령의 각 값** — 아래 `create` 명령은 그림의 4단계에서 비교할 값을 등록합니다.
+
+| 인자 | 값 | 의미 |
+|---|---|---|
+| `--identity-name` | `$argocdId` | 신뢰 관계를 붙일 관리 ID(①) |
+| `-n` | `argocd-repo-server` | 자격 증명 이름. 관리 ID 안에서만 구분용이며 아무 이름이나 됩니다 |
+| `--issuer` | `$issuer` | 토큰을 발급한 곳. **이 클러스터**의 OIDC 주소이므로 다른 클러스터 토큰은 거절됩니다 |
+| `--subject` | `system:serviceaccount:argocd:argocd-repo-server` | 토큰의 주인. `argocd` 네임스페이스의 `argocd-repo-server` 서비스 계정만 허용합니다 |
+| `--audiences` | `api://AzureADTokenExchange` | 토큰의 용도. 워크로드 ID 토큰 교환에 쓰는 고정값입니다 |
 
 🟢 **실행 · 같은 PowerShell** — 페더레이션 자격 증명을 만듭니다.
 
