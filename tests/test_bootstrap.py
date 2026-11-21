@@ -11,6 +11,12 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("ACR_LOGIN_SERVER/helm", text)
         self.assertIn("chart: demo-app", text)
 
+    def test_project_permits_rollout_children_for_ui_tree(self):
+        # Argo CD는 프로젝트가 허용하지 않은 종류를 리소스 트리에서 숨깁니다.
+        text = (BOOTSTRAP / "project.yaml").read_text(encoding="utf-8")
+        for group, kind in [("apps", "ReplicaSet"), ("''", "Pod")]:
+            self.assertRegex(text, rf"- group: {group}\s+kind: {kind}\b")
+
 
 if __name__ == "__main__":
     unittest.main()

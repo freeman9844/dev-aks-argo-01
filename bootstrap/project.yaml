@@ -15,3 +15,9 @@ spec:
       kind: Rollout
     - group: ''
       kind: Service
+    # 차트는 Rollout과 Service만 만듭니다. 아래 두 종류는 Rollout이 만드는 자식입니다.
+    # 허용하지 않으면 Argo CD UI 트리에서 ReplicaSet과 Pod가 숨겨집니다.
+    - group: apps
+      kind: ReplicaSet
+    - group: ''
+      kind: Pod
