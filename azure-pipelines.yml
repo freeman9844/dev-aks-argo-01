@@ -58,7 +58,10 @@ jobs:
           ./argocd version --client --short
           # 토큰·주소가 틀리면 여기서 실패합니다(아래 '앱 없음' 경고와 구분).
           ./argocd account get-user-info
-          if ! ./argocd app get demo-app > /dev/null; then
+          # Argo CD는 없는 앱도 '권한 없음'으로 답하므로 app get 실패로는 구분할 수 없습니다.
+          # 볼 수 있는 앱 목록에 demo-app이 있는지로 판단합니다(목록 조회 자체가 실패하면 여기서 중단).
+          apps=$(./argocd app list -o name)
+          if ! grep -qE '(^|/)demo-app$' <<< "$apps"; then
             echo "##vso[task.logissue type=warning]Argo CD Application demo-app이 아직 없습니다. 04 단계에서 Application을 만든 뒤 파이프라인을 다시 실행하세요. (차트 $CHART_VERSION 은 ACR에 푸시됨)"
             exit 0
           fi

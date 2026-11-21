@@ -90,8 +90,10 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
 
 // CI 전용 로컬 계정 ci의 권한(Argo CD RBAC). demo 프로젝트의 demo-app 하나에 대해
 // 조회(get)·대상 차트 버전 변경(update)·동기화(sync)만 허용합니다. 삭제나 다른 앱 접근은 거부됩니다.
+// argocd app get/wait은 프로젝트의 Sync Window도 읽으므로 demo 프로젝트 조회(projects, get)가 필요합니다.
 // 파일 줄바꿈(CRLF)이 정책에 섞이지 않도록 LF로 직접 연결합니다.
 var ciPolicy = join([
+  'p, role:ci, projects, get, demo, allow'
   'p, role:ci, applications, get, demo/demo-app, allow'
   'p, role:ci, applications, update, demo/demo-app, allow'
   'p, role:ci, applications, sync, demo/demo-app, allow'
