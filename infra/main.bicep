@@ -1,20 +1,26 @@
 // =============================================================================
-// AKS GitOps 카나리 실습 인프라 (docs/02-infrastructure.md)
+// AKS + Argo CD(CD 엔진) 1단계 실습 인프라 (docs/02-infrastructure.md)
 //
-// 이 템플릿이 실습 리소스 그룹에 직접 만드는 리소스는 4개입니다.
-//   1. AKS 클러스터            - 이미지를 실행하는 곳
+// 이 템플릿이 실습 리소스 그룹에 만드는 리소스입니다.
+//   1. AKS 클러스터            - 이미지를 실행하는 곳(OIDC 발급자·워크로드 ID 사용)
 //   2. Argo CD 확장            - AKS에 붙는 Microsoft.ArgoCD 클러스터 확장
-//   3. ACR (Basic)             - CI가 빌드한 이미지를 저장하는 곳
+//                                (UI/API 공개, CI 전용 계정 ci, 워크로드 ID 연결)
+//   3. ACR (Basic)             - CI가 빌드한 이미지와 Helm 차트를 저장하는 곳
 //   4. AcrPull 역할 할당       - AKS 노드(kubelet)가 ACR에서 이미지를 읽는 권한
+//   5. Argo CD용 관리 ID       - Argo CD가 ACR에서 Helm 차트를 읽을 때 쓰는 ID
+//      + 페더레이션 자격 증명  - argocd-repo-server ServiceAccount를 이 관리 ID와 연결
+//      + AcrPull 역할 할당     - 이 관리 ID가 ACR을 읽는 권한
 //
-// 노드 VM Scale Set, 가상 네트워크, Load Balancer는 AKS가 별도의
+// 노드 VM Scale Set, 가상 네트워크, Load Balancer·공인 IP는 AKS가 별도의
 // "노드 리소스 그룹(MC_...)"에 자동으로 만들며, 이 파일에는 선언하지 않습니다.
 //
 // 이 템플릿이 다루지 않는 것:
 //   - Argo Rollouts 컨트롤러 : 02 단계에서 Helm으로 설치
 //   - CI의 ACR 푸시 권한     : 03 단계에서 Azure DevOps 서비스 연결에 AcrPush 부여
-//   - Argo CD의 Git 읽기 권한 : 04 단계에서 관리 ID + 확장 워크로드 ID 설정(az k8s-extension update)으로 연결
-//     ※ 이 템플릿을 다시 배포하면 04에서 추가한 azure.workloadIdentity.* 설정이 지워지므로 04 §2를 다시 실행합니다.
+//   - ci 계정의 API 토큰     : 03 단계에서 Argo CD UI로 생성(계정과 권한만 여기서 선언)
+//
+// ⚠️ 실습 단순화를 위해 Argo CD UI/API를 공인 IP(LoadBalancer)로 공개합니다.
+//    운영 환경에서는 사설 빌드 에이전트 + 내부 LB/Ingress + SSO를 사용하세요.
 //
 // 배포 예시 (실습 전용 새 리소스 그룹에서 실행):
 //   az deployment group what-if -g $rg -f .\infra\main.bicep -p aksName=$aks acrName=$acr
@@ -51,6 +57,11 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
     dnsPrefix: aksName
     // Kubernetes RBAC 사용. Argo CD 등 구성 요소가 ServiceAccount 권한 범위 안에서 동작합니다.
     enableRBAC: true
+    // OIDC 발급자: 클러스터가 ServiceAccount 토큰을 발급하는 주소를 공개합니다.
+    // Entra ID는 이 주소를 신뢰해 Pod의 토큰을 관리 ID 토큰으로 교환합니다(아래 5번).
+    oidcIssuerProfile: { enabled: true }
+    // 워크로드 ID: 레이블이 붙은 Pod에 관리 ID 정보(AZURE_CLIENT_ID 등)와 토큰 파일을 주입합니다.
+    securityProfile: { workloadIdentity: { enabled: true } }
     agentPoolProfiles: [
       {
         // 시스템 노드 풀 하나에 실습 워크로드까지 함께 올립니다(운영 환경에서는 사용자 풀 분리 권장).
@@ -77,13 +88,27 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
 
 // ----- 2. Argo CD 클러스터 확장 ------------------------------------------------
 
+// CI 전용 로컬 계정 ci의 권한(Argo CD RBAC). demo 프로젝트의 demo-app 하나에 대해
+// 조회(get)·대상 차트 버전 변경(update)·동기화(sync)만 허용합니다. 삭제나 다른 앱 접근은 거부됩니다.
+// 파일 줄바꿈(CRLF)이 정책에 섞이지 않도록 LF로 직접 연결합니다.
+var ciPolicy = join([
+  'p, role:ci, applications, get, demo/demo-app, allow'
+  'p, role:ci, applications, update, demo/demo-app, allow'
+  'p, role:ci, applications, sync, demo/demo-app, allow'
+  'g, ci, role:ci'
+], '\n')
+
 // Helm으로 직접 설치하지 않고 Azure가 관리하는 AKS 확장(Microsoft.ArgoCD)으로 설치합니다.
 // 설치 상태는 az k8s-extension show 로 확인하며, 실습에서는 provisioningState=Succeeded를 기다립니다.
+// 확장이 관리하는 ConfigMap·Service를 kubectl로 직접 고치면 확장이 되돌릴 수 있으므로,
+// Argo CD 설정은 모두 아래 configurationSettings로만 바꿉니다.
 resource argocd 'Microsoft.KubernetesConfiguration/extensions@2023-05-01' = {
   // 확장 인스턴스 이름. az k8s-extension 명령의 -n 값과 같습니다.
   name: 'argocd'
   // 확장 리소스는 리소스 그룹이 아니라 AKS 클러스터 범위(하위 리소스)에 붙습니다.
   scope: aks
+  // 관리 ID 연결과 ACR 권한이 준비된 뒤 설치해야 repo-server가 처음부터 차트를 읽을 수 있습니다.
+  dependsOn: [ argocdFederation, argocdPull ]
   properties: {
     extensionType: 'Microsoft.ArgoCD'
     // 확장의 부 버전(minor) 업데이트를 Azure가 자동 적용합니다.
@@ -91,12 +116,21 @@ resource argocd 'Microsoft.KubernetesConfiguration/extensions@2023-05-01' = {
     // 클러스터 범위로 설치하고 Argo CD 구성 요소는 argocd 네임스페이스에 배포합니다.
     scope: { cluster: { releaseNamespace: 'argocd' } }
     // 확장 내부 Helm 값 재정의. 값은 모두 문자열로 전달합니다.
+    // 키 안의 점(.)이 ConfigMap 키 이름의 일부이면 '\\.'로 씁니다(실제 키: accounts\.ci).
     configurationSettings: {
-      // Redis HA는 Redis Pod 여러 개를 서로 다른 노드에 분산하도록 설계되어 있어,
+      // Redis HA는 Redis Pod 여러 개를 서로 다른 노드에 분산하도록 설계되어 있어(노드 4대 필요),
       // 노드 2대인 실습에서는 Pending이 생길 수 있습니다. 단일 Redis로 단순화합니다.
       'redis-ha.enabled': 'false'
-      // Argo CD UI/API를 외부 IP로 공개하지 않습니다. 04 단계에서 kubectl port-forward로만 접속합니다.
-      'server.service.type': 'ClusterIP'
+      // Argo CD UI/API를 공인 IP로 공개합니다. 참가자 브라우저와 Microsoft 호스팅 에이전트(CI)가
+      // 같은 주소로 접속합니다. 인증서는 자체 서명이라 브라우저 경고와 CLI --insecure가 필요합니다.
+      'server.service.type': 'LoadBalancer'
+      // 워크로드 ID: 확장이 argocd-repo-server ServiceAccount와 Pod에 아래 관리 ID를 연결합니다.
+      'azure.workloadIdentity.enabled': 'true'
+      'azure.workloadIdentity.clientId': argocdIdentity.properties.clientId
+      // CI 전용 로컬 계정 ci. apiKey: UI 로그인은 불가하고 API 토큰만 발급할 수 있습니다.
+      'configs.cm.accounts\\.ci': 'apiKey'
+      // 위 ciPolicy. 기본 정책이 없으므로 명시되지 않은 계정(admin 제외)은 아무 권한도 없습니다.
+      'configs.rbac.policy\\.csv': ciPolicy
     }
   }
 }
@@ -138,9 +172,43 @@ resource pull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+// ----- 5. Argo CD → ACR Helm 차트 읽기용 관리 ID ---------------------------------
+
+// Argo CD repo-server가 ACR의 OCI Helm 차트를 내려받을 때 쓰는 사용자 할당 관리 ID입니다.
+// 비밀번호나 토큰을 저장하지 않고, Kubernetes ServiceAccount 토큰을 Entra ID 토큰으로 교환합니다.
+resource argocdIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-argocd-${aksName}'
+  location: location
+}
+
+// 페더레이션 자격 증명: "이 클러스터(OIDC 발급자)의 argocd 네임스페이스 argocd-repo-server
+// ServiceAccount"가 제시한 토큰만 위 관리 ID로 교환할 수 있게 신뢰 관계를 맺습니다.
+resource argocdFederation 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = {
+  parent: argocdIdentity
+  name: 'argocd-repo-server'
+  properties: {
+    issuer: aks.properties.oidcIssuerProfile.issuerURL
+    subject: 'system:serviceaccount:argocd:argocd-repo-server'
+    audiences: [ 'api://AzureADTokenExchange' ]
+  }
+}
+
+// 이 관리 ID에 ACR 하나에 대한 AcrPull(읽기 전용)만 줍니다. 차트 push는 CI(AcrPush)만 합니다.
+resource argocdPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, argocdIdentity.id, pullRole)
+  scope: acr
+  properties: {
+    roleDefinitionId: pullRole
+    principalType: 'ServicePrincipal'
+    principalId: argocdIdentity.properties.principalId
+  }
+}
+
 // ----- 출력 ---------------------------------------------------------------------
 
 // 이후 단계에서 쓰는 값입니다. acrLoginServer는 03 단계 파이프라인 변수 acrLoginServer와 같은 값입니다.
 output aksName string = aks.name
 output acrLoginServer string = acr.properties.loginServer
 output acrId string = acr.id
+// 02에서 repo-server Pod의 AZURE_CLIENT_ID와 비교해 워크로드 ID 연결을 확인합니다.
+output argocdIdentityClientId string = argocdIdentity.properties.clientId
