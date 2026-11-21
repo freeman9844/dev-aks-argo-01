@@ -24,6 +24,14 @@ demo-app-<기존 해시>          4         4       4
 demo-app-<신규 해시>          1         1       1
 ```
 
+### Argo CD 화면에서 정지와 실패 구분하기
+
+[04에서 연 Argo CD UI](04-first-sync.md)에서 **Applications → demo-app**을 클릭합니다. **SYNC STATUS**는 `Synced`인데 **APP HEALTH**는 `Suspended`일 수 있습니다. 촬영 당시 아래 화면의 `rollout` 노드에도 보라색 정지 아이콘이 있었고, 같은 시점 `kubectl get rs`에서는 v1 Ready 4개·v2 Ready 1개였습니다.
+
+![카나리 정지 중인 실제 Argo CD 화면: APP HEALTH는 Suspended, SYNC STATUS는 Synced, LAST SYNC는 Sync OK](images/05-argocd-canary-tree.png)
+
+GitOps 커밋은 이미 반영됐고 Rollouts가 사람의 승격을 기다리는 상태입니다. **SYNC를 다시 누르는 것은 승격이 아닙니다.** 화면만으로 Pod 비율을 단정하지 말고 아래에서 실제 두 버전의 응답까지 확인하세요.
+
 ## 2. 실제 응답 비교 및 승격
 
 👁️ **설명** — Service를 두 번 호출하면 우연히 같은 버전만 만날 수 있습니다. 아래에서는 각 ReplicaSet의 해시로 Pod를 하나씩 고른 뒤, 그 Pod 안에서 `/version`을 호출합니다. 따라서 두 응답을 코드 변경 전후와 직접 연결할 수 있습니다.

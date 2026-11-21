@@ -8,6 +8,10 @@
 
 🟢 **실행 · 브라우저 / Azure DevOps**
 
+04에서 연 **Argo CD → Log out**을 선택하고 `kubectl port-forward`를 실행한 창에서 Ctrl+C를 누릅니다. 포워딩 종료는 로컬 접속만 닫으며 AKS 과금은 계속됩니다.
+
+Azure DevOps에서는 **Pipelines → 대상 파이프라인 → ⋯ → Settings**에서 **Processing of new run requests → Disabled**로 저장합니다. 조직 UI에서 이름이 다르면 파이프라인 설정의 실행 요청 처리 옵션을 찾으세요. 이후 **Project settings → Service connections**에서 *이번 실습 연결*을 선택합니다. 다른 팀이 사용하는 연결은 삭제하지 않습니다.
+
 파이프라인 설정에서 새 실행을 비활성화하고 진행 중인 실행이 없는지 확인합니다. 실습 전용 `demo-acr-push` 서비스 연결을 삭제하고 빌드 ID의 `demo` 브랜치 쓰기 권한을 회수합니다. **Organization settings → Users**에서 04에서 추가한 읽기 ID의 액세스와 Basic 좌석을 회수합니다. CI용 앱 등록이나 관리 ID를 그룹 밖에 따로 만들었다면 전용인지 확인한 뒤 정리합니다. Git 저장소와 빌드 로그는 Azure 그룹을 삭제해도 남습니다.
 
 ## 2. 삭제 대상 확인

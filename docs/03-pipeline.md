@@ -8,7 +8,9 @@
 
 🟢 **실행 · 브라우저 / Azure DevOps → Repos**, 이후 **PC / PowerShell**
 
-비공개 실습 프로젝트에 README 없는 빈 저장소 `demo-app`, `demo-gitops`를 만듭니다. 각 저장소의 **Clone → HTTPS**에서 URL을 복사합니다. 아래 명령은 로컬 원격 설정을 변경하지 않으며 새 저장소에만 실행합니다.
+1. 비공개 실습 프로젝트에서 **Repos → Files → 상단 저장소 이름 ▼ → New repository**를 엽니다. 유형 **Git**, 이름 `demo-app`, **Add a README** 해제 후 **Create**를 선택합니다. `demo-gitops`도 같은 방법으로 만듭니다.
+2. 각 저장소에서 **Clone → HTTPS** 주소를 복사합니다. 두 주소의 마지막 경로가 각각 `/_git/demo-app`, `/_git/demo-gitops`인지 확인하세요. 같은 URL을 두 번 사용하면 앱 소스와 배포 명세가 한 저장소에 들어갑니다.
+3. PC로 돌아와 다음을 실행합니다. 아래 명령은 로컬 원격 설정을 변경하지 않으며 새 저장소에만 실행합니다.
 
 ```powershell
 $appUrl = Read-Host 'demo-app HTTPS URL'
@@ -39,7 +41,9 @@ GitOps 저장소 루트에는 `dev/kustomization.yaml`이 보여야 합니다. s
 
 🟢 **실행 · 브라우저 / Pipelines → New pipeline**
 
-**Azure Repos Git → demo-app → Existing Azure Pipelines YAML file → main → `/azure-pipelines.yml`**을 선택합니다. 변수 `acrName`, `acrLoginServer`에 02의 실제 값을 넣고 실행합니다. 사전 승인 요청이 뜨면 대상 연결·저장소와 브랜치를 확인합니다.
+1. **Pipelines → New pipeline**(첫 파이프라인이면 **Create Pipeline**)에서 **Azure Repos Git → demo-app → Existing Azure Pipelines YAML file**을 선택합니다. 브랜치 `main`, 경로 `/azure-pipelines.yml`로 **Continue**합니다.
+2. 검토 화면의 **Variables → New variable**에서 `acrName`과 `acrLoginServer`를 하나씩 추가합니다. 값은 각각 02의 `$acr`, `$loginServer` 출력이며, 로그인 서버에는 `https://`를 붙이지 않습니다. **Save → Run**으로 실행합니다. 리소스 승인 요청이 뜨면 연결·저장소가 실습 대상인지 확인한 뒤 해당 파이프라인만 승인하세요.
+3. **Pipelines → 해당 실행 → Jobs → Build → publish**에서 `sha256:` 값을 복사합니다. **UpdateGit**도 성공했는지 확인하세요. `Build`만 성공했다면 이미지는 있지만 Git에는 아직 배포 결정이 기록되지 않았을 수 있습니다.
 
 **예상 결과:** `Build`의 `publish` 로그에 SHA·태그·digest가 보이고, `UpdateGit`이 성공합니다. `demo-gitops:demo`의 `dev/kustomization.yaml`에서 `images[0].digest`가 로그와 같은지 확인합니다. 이 시점에는 **아직 앱이 배포되지 않았습니다.**
 

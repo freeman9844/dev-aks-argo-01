@@ -53,6 +53,35 @@ kubectl get rs -n demo -l app=demo-app
 
 **예상 결과:** `Synced`이며 v1 ReplicaSet의 `READY`가 5입니다. 최초 배포는 비교할 이전 버전이 없어 카나리 정지를 하지 않습니다.
 
+### 브라우저에서 같은 배포 확인하기
+
+1. 같은 실습 kubeconfig를 쓰는 PowerShell 창에서 아래 명령을 실행한 채 둡니다. 서비스는 `ClusterIP`로 유지되며 참가자 PC의 루프백에서만 접속할 수 있습니다.
+
+   ```powershell
+   kubectl port-forward -n argocd --address 127.0.0.1 svc/argocd-server 19443:443
+   ```
+
+2. 브라우저에서 `https://127.0.0.1:19443`을 엽니다. 인증서 경고가 있다면 **방금 포워딩한 로컬 주소**인지 먼저 확인합니다. 조직에서 발급한 계정이 있으면 그 계정을 사용하세요. 이 워크숍처럼 방금 생성한 전용 클러스터의 최초 관리자라면, 다른 PowerShell 창에서 **같은 `$env:KUBECONFIG`**를 지정하고 다음 명령으로 초기 암호를 클립보드에 복사합니다. 사용자 이름은 `admin`입니다. 로그인 후 클립보드를 비우고 초기 암호를 변경하세요. 공유 PC나 녹화 중인 터미널에서는 초기 암호를 출력하지 않습니다.
+
+   ```powershell
+   $encoded = kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}'
+   if ($LASTEXITCODE -ne 0 -or !$encoded) { throw '초기 관리자 Secret을 사용할 수 없습니다.' }
+   Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)))
+   Remove-Variable encoded
+   ```
+
+   브라우저에서 붙여넣은 **뒤에** `Set-Clipboard -Value ''`를 별도로 실행합니다.
+
+3. **Applications**에서 `demo-app` 카드를 찾습니다. **Project: demo**, **Path: dev**, **Namespace: demo**를 확인합니다. 위에서 Application을 이미 등록했으므로 **NEW APP**을 다시 누르지 않습니다.
+
+   ![Argo CD Applications의 demo-app 카드: Healthy, Synced, 경로 dev와 대상 네임스페이스 demo](images/04-argocd-applications.png)
+
+4. 카드의 **demo-app** 이름을 클릭합니다. **SYNC STATUS** 옆의 짧은 SHA를 Azure Repos의 **GitOps 커밋**과 비교하고, 아래 트리에서 `svc`와 `rollout`을 찾습니다. `LAST SYNC: Sync OK`와 `APP HEALTH: Healthy`는 서로 다른 확인 항목입니다.
+
+   ![v1 첫 동기화 상세 화면: Healthy, Synced, Sync OK와 Service 및 Rollout 리소스](images/04-argocd-v1-tree.png)
+
+   *04·05 그림은 AKS의 `Microsoft.ArgoCD` 확장(v3.5.6)에 Playwright로 접속해 촬영한 실제 화면입니다. 기존 `demo` 브랜치를 건드리지 않도록 촬영에만 `workshop-ui` 브랜치와 별도 ACR 빌드를 사용했습니다. 참가자는 교재의 `demo` 브랜치를 그대로 사용하며 SHA·시간은 달라집니다. 비공개 주소와 개인 작성자 정보는 가렸습니다.*
+
 📋 **확인 · 어느 커밋을 배포했나요?**
 
 ```powershell
