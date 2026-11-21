@@ -8,7 +8,6 @@
 //   3. ACR (Basic)             - CI가 빌드한 이미지와 Helm 차트를 저장하는 곳
 //   4. AcrPull 역할 할당       - AKS 노드(kubelet)가 ACR에서 이미지를 읽는 권한
 //   5. Argo CD용 관리 ID       - Argo CD가 ACR에서 Helm 차트를 읽을 때 쓰는 ID
-//      + 페더레이션 자격 증명  - argocd-repo-server ServiceAccount를 이 관리 ID와 연결
 //      + AcrPull 역할 할당     - 이 관리 ID가 ACR을 읽는 권한
 //   6. CI용 관리 ID           - Azure DevOps 서비스 연결이 ACR에 푸시할 때 쓰는 ID
 //      + AcrPush 역할 할당     - 이 관리 ID가 ACR에 이미지·차트를 쓰는 권한
@@ -18,6 +17,7 @@
 //
 // 이 템플릿이 다루지 않는 것:
 //   - Argo Rollouts 컨트롤러 : 02 단계에서 Helm으로 설치
+//   - Argo CD 관리 ID의 페더레이션 : 02 교재 3절에서 참가자가 CLI로 추가(신뢰 관계를 눈으로 확인하기 위해 분리)
 //   - CI 관리 ID의 페더레이션 : 03 단계에서 서비스 연결(Managed identity)을 만들 때 Azure DevOps가 자동 생성
 //   - ci 계정의 API 토큰     : 03 단계에서 Argo CD UI로 생성(계정과 권한만 여기서 선언)
 //
@@ -60,7 +60,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
     // Kubernetes RBAC 사용. Argo CD 등 구성 요소가 ServiceAccount 권한 범위 안에서 동작합니다.
     enableRBAC: true
     // OIDC 발급자: 클러스터가 ServiceAccount 토큰을 발급하는 주소를 공개합니다.
-    // Entra ID는 이 주소를 신뢰해 Pod의 토큰을 관리 ID 토큰으로 교환합니다(아래 5번).
+    // Entra ID는 이 주소를 신뢰해 Pod의 토큰을 관리 ID 토큰으로 교환합니다(02 교재 3절에서 페더레이션 추가).
     oidcIssuerProfile: { enabled: true }
     // 워크로드 ID: 레이블이 붙은 Pod에 관리 ID 정보(AZURE_CLIENT_ID 등)와 토큰 파일을 주입합니다.
     securityProfile: { workloadIdentity: { enabled: true } }
@@ -111,8 +111,9 @@ resource argocd 'Microsoft.KubernetesConfiguration/extensions@2023-05-01' = {
   name: 'argocd'
   // 확장 리소스는 리소스 그룹이 아니라 AKS 클러스터 범위(하위 리소스)에 붙습니다.
   scope: aks
-  // 관리 ID 연결과 ACR 권한이 준비된 뒤 설치해야 repo-server가 처음부터 차트를 읽을 수 있습니다.
-  dependsOn: [ argocdFederation, argocdPull ]
+  // ACR 권한이 준비된 뒤 설치합니다. 관리 ID 연결(clientId)은 지금 하고, 그 ID를 실제로 쓰게 해 주는
+  // 페더레이션 자격 증명은 02 교재 3절에서 CLI로 추가합니다.
+  dependsOn: [ argocdPull ]
   properties: {
     extensionType: 'Microsoft.ArgoCD'
     // 확장의 부 버전(minor) 업데이트를 Azure가 자동 적용합니다.
@@ -180,21 +181,11 @@ resource pull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 // Argo CD repo-server가 ACR의 OCI Helm 차트를 내려받을 때 쓰는 사용자 할당 관리 ID입니다.
 // 비밀번호나 토큰을 저장하지 않고, Kubernetes ServiceAccount 토큰을 Entra ID 토큰으로 교환합니다.
+// 교환에 필요한 신뢰 관계(페더레이션 자격 증명)는 일부러 여기서 만들지 않습니다.
+// 02 교재 3절에서 참가자가 CLI로 직접 추가하며, 그 전까지 repo-server는 이 ID를 쓸 수 없습니다.
 resource argocdIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: 'id-argocd-${aksName}'
   location: location
-}
-
-// 페더레이션 자격 증명: "이 클러스터(OIDC 발급자)의 argocd 네임스페이스 argocd-repo-server
-// ServiceAccount"가 제시한 토큰만 위 관리 ID로 교환할 수 있게 신뢰 관계를 맺습니다.
-resource argocdFederation 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = {
-  parent: argocdIdentity
-  name: 'argocd-repo-server'
-  properties: {
-    issuer: aks.properties.oidcIssuerProfile.issuerURL
-    subject: 'system:serviceaccount:argocd:argocd-repo-server'
-    audiences: [ 'api://AzureADTokenExchange' ]
-  }
 }
 
 // 이 관리 ID에 ACR 하나에 대한 AcrPull(읽기 전용)만 줍니다. 차트 push는 CI(AcrPush)만 합니다.
@@ -237,5 +228,7 @@ output acrLoginServer string = acr.properties.loginServer
 output acrId string = acr.id
 // 02에서 repo-server Pod의 AZURE_CLIENT_ID와 비교해 워크로드 ID 연결을 확인합니다.
 output argocdIdentityClientId string = argocdIdentity.properties.clientId
+// 02 교재 3절에서 페더레이션 자격 증명을 추가할 Argo CD용 관리 ID 이름입니다.
+output argocdIdentityName string = argocdIdentity.name
 // 03에서 서비스 연결을 만들 때 고르는 CI용 관리 ID 이름입니다.
 output ciIdentityName string = ciIdentity.name

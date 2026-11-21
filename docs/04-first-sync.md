@@ -165,7 +165,7 @@ kubectl get rollout demo-app -n demo -o jsonpath='{.spec.template.spec.container
 
 | 증상 | 원인과 조치 |
 |---|---|
-| CONNECT REPO가 `Failed` | URL에 `https://`·`oci://`를 붙였는지, **Enable OCI**와 **Use Azure Workload Identity**를 모두 체크했는지, 02의 두 client ID가 같은지 확인합니다. |
+| CONNECT REPO가 `Failed` | URL에 `https://`·`oci://`를 붙였는지, **Enable OCI**와 **Use Azure Workload Identity**를 모두 체크했는지 봅니다. 메시지에 `AADSTS70025`·`has no configured federated identity credentials`가 있으면 [02 3절](02-infrastructure.md#3-argo-cd에-워크로드-id-페더레이션-연결)의 페더레이션 자격 증명을 만들지 않은 것입니다. `AADSTS70021`·`No matching federated identity record`이면 자격 증명은 있지만 발급자나 주체가 다릅니다. 02 3절의 `federated-credential list`와 두 client ID를 다시 확인합니다. |
 | NEW APP에 Chart 칸 대신 Path 칸이 보임 | URL을 HELM 선택보다 먼저 입력했습니다. CANCEL 후 HELM을 먼저 고릅니다. |
 | CREATE 시 `Unable to generate manifests` | 저장소 연결 상태와 버전 칸(`1.0.*`)을 확인합니다. CREATE 직후 창을 닫지 말고 기다립니다. |
 | 재실행했는데 `Deploy`가 여전히 "아직 없음" 경고 | Application 이름이 `demo-app`, 프로젝트가 `demo`인지 확인합니다. 다른 이름이면 `ci`가 볼 수 없습니다. |

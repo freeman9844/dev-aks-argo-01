@@ -1,6 +1,6 @@
 # 02. AKS와 Argo CD 확장 설치
 
-**목표:** [Bicep 템플릿](../infra/main.bicep) 하나로 ACR, AKS, 이미지·차트를 읽을 권한, `Microsoft.ArgoCD` 확장을 설치하고 브라우저로 Argo CD에 로그인합니다. Helm은 **Argo Rollouts** 설치에만 사용합니다.
+**목표:** [Bicep 템플릿](../infra/main.bicep) 하나로 ACR, AKS, 이미지·차트를 읽을 권한, `Microsoft.ArgoCD` 확장을 설치합니다. 이어서 Argo CD가 비밀번호 없이 ACR에 접속하도록 **워크로드 ID 페더레이션**을 CLI로 직접 연결하고, 브라우저로 Argo CD에 로그인합니다. Helm은 **Argo Rollouts** 설치에만 사용합니다.
 
 ## 0. 배포 전에 구조 읽기: Azure에는 두 그룹, Kubernetes에는 세 네임스페이스
 
@@ -41,10 +41,10 @@ flowchart TB
 | ID | 권한 | 하는 일 | 만드는 곳 |
 |---|---|---|---|
 | kubelet 관리 ID | ACR 범위 `AcrPull` | 노드가 **이미지**를 pull | Bicep(AKS가 자동 생성, 역할만 Bicep) |
-| `id-argocd-<AKS 이름>` | ACR 범위 `AcrPull` | `argocd-repo-server`가 **Helm 차트**를 pull | Bicep(관리 ID, 페더레이션, 역할) |
+| `id-argocd-<AKS 이름>` | ACR 범위 `AcrPull` | `argocd-repo-server`가 **Helm 차트**를 pull | Bicep(관리 ID, 역할). 페더레이션은 3절에서 참가자가 CLI로 추가 |
 | `id-ci-<AKS 이름>` | ACR 범위 `AcrPush` | 파이프라인이 이미지와 차트를 push | Bicep(관리 ID, 역할). 페더레이션은 [03](03-pipeline.md)에서 서비스 연결을 만들 때 Azure DevOps가 추가 |
 
-Argo CD의 관리 ID에는 비밀 값이 없습니다. AKS가 `argocd-repo-server` 서비스 계정에 발급한 토큰을 Microsoft Entra ID가 **페더레이션 자격 증명**(발급자 = 이 클러스터, 주체 = `system:serviceaccount:argocd:argocd-repo-server`)으로 확인하고, 그 대가로 관리 ID 토큰을 줍니다. 그래서 다른 클러스터나 다른 Pod는 이 ID를 쓸 수 없습니다.
+Argo CD의 관리 ID에는 비밀 값이 없습니다. AKS가 `argocd-repo-server` 서비스 계정에 발급한 토큰을 Microsoft Entra ID가 **페더레이션 자격 증명**(발급자 = 이 클러스터, 주체 = `system:serviceaccount:argocd:argocd-repo-server`)으로 확인하고, 그 대가로 관리 ID 토큰을 줍니다. 그래서 다른 클러스터나 다른 Pod는 이 ID를 쓸 수 없습니다. 이 신뢰 관계가 어떻게 생기는지 보이도록 Bicep에서 빼고 [3절](#3-argo-cd에-워크로드-id-페더레이션-연결)에서 직접 만듭니다.
 
 **Argo CD 확장 설정도 Bicep에 있습니다.** 서버를 LoadBalancer로 열고, UI 로그인 없이 API 토큰만 쓰는 CI 전용 계정 `ci`와 그 권한(`demo/demo-app`의 조회·차트 버전 변경·Sync)을 선언합니다. 확장이 관리하는 ConfigMap이나 Service를 `kubectl`로 직접 고치면 확장이 원래대로 되돌릴 수 있으므로, 설정은 항상 템플릿으로 바꿉니다.
 
@@ -64,7 +64,7 @@ $params = @("aksName=$aks","acrName=$acr")
 az deployment group what-if -g $rg -f .\infra\main.bicep -p @params
 ```
 
-📋 **확인** — 미리 보기에 AKS, ACR, `Microsoft.ArgoCD` 확장, 관리 ID `id-argocd-<AKS 이름>`과 그 페더레이션 자격 증명, 관리 ID `id-ci-<AKS 이름>`, AcrPull 역할 할당 2개, AcrPush 역할 할당 1개가 신규(`+ Create`)로 표시되어야 합니다.
+📋 **확인** — 미리 보기에 AKS, ACR, `Microsoft.ArgoCD` 확장, 관리 ID `id-argocd-<AKS 이름>`, 관리 ID `id-ci-<AKS 이름>`, AcrPull 역할 할당 2개, AcrPush 역할 할당 1개가 신규(`+ Create`)로 표시되어야 합니다. 페더레이션 자격 증명은 목록에 없는 것이 정상입니다.
 
 ⚠️ **주의** — 아래 `create`부터 노드와 디스크 비용이 발생합니다. 기존 자원 수정·삭제가 보이면 중단하세요. 확장 설치는 AKS 생성 뒤 몇 분 더 걸리므로 전체 배포는 10~15분 정도입니다.
 
@@ -104,14 +104,50 @@ kubectl get crd rollouts.argoproj.io
 
 📋 **확인** — 노드 2개는 `Ready`, `argocd` Pod는 모두 `Running`, 마지막 출력에는 `rollouts.argoproj.io`가 보여야 합니다.
 
-이어서 Argo CD가 차트를 읽을 때 쓸 ID가 제대로 연결됐는지 확인합니다. 두 값이 같아야 합니다.
+## 3. Argo CD에 워크로드 ID 페더레이션 연결
+
+👁️ **설명** — Argo CD가 ACR에서 차트를 읽으려면 세 가지가 모두 필요합니다.
+
+| 구성 요소 | 하는 일 | 만든 곳 |
+|---|---|---|
+| ① 관리 ID `id-argocd-<AKS 이름>`과 ACR `AcrPull` | "누가 무엇을 읽을 수 있는가" | 1절 Bicep |
+| ② `argocd-repo-server` 서비스 계정의 client ID 어노테이션 | "이 Pod는 어떤 관리 ID를 쓰려 하는가" | 1절 Bicep(확장 설정) |
+| ③ 관리 ID의 페더레이션 자격 증명 | "Entra ID가 이 클러스터의 이 서비스 계정 토큰을 믿는가" | **이 절, CLI** |
+
+①과 ②만 있으면 repo-server는 관리 ID를 **쓰려고는 하지만** Entra ID가 토큰 교환을 거절합니다. ③은 "발급자(이 클러스터의 OIDC 주소) + 주체(`system:serviceaccount:argocd:argocd-repo-server`)가 일치하는 토큰만 받아 준다"는 신뢰 관계입니다. 비밀번호나 키를 저장하지 않으므로 교체할 값도 없습니다.
+
+🟢 **실행 · 같은 PowerShell** — 먼저 ②가 ①과 같은 ID를 가리키는지 봅니다. 두 값이 같아야 합니다.
 
 ```powershell
 az deployment group show -g $rg -n demo-infra --query properties.outputs.argocdIdentityClientId.value -o tsv
 kubectl get sa argocd-repo-server -n argocd -o jsonpath='{.metadata.annotations.azure\.workload\.identity/client-id}{"\n"}'
 ```
 
-## 3. 브라우저로 Argo CD 접속
+이어서 페더레이션에 넣을 두 값(클러스터의 OIDC 발급자 주소, 관리 ID 이름)을 읽고, 아직 페더레이션이 없는지 확인합니다.
+
+```powershell
+$issuer = az aks show -g $rg -n $aks --query oidcIssuerProfile.issuerUrl -o tsv
+$argocdId = az deployment group show -g $rg -n demo-infra --query properties.outputs.argocdIdentityName.value -o tsv
+$issuer; $argocdId
+az identity federated-credential list -g $rg --identity-name $argocdId -o table
+```
+
+📋 **확인** — `$issuer`는 `https://koreacentral.oic.prod-aks.azure.com/...`처럼 끝이 `/`인 주소이고, 마지막 목록은 **비어 있어야** 합니다.
+
+🟢 **실행 · 같은 PowerShell** — 페더레이션 자격 증명을 만듭니다.
+
+```powershell
+az identity federated-credential create -g $rg --identity-name $argocdId -n argocd-repo-server --issuer $issuer --subject system:serviceaccount:argocd:argocd-repo-server --audiences api://AzureADTokenExchange
+az identity federated-credential list -g $rg --identity-name $argocdId --query "[].{name:name,subject:subject,issuer:issuer}" -o table
+```
+
+📋 **확인** — 목록에 `argocd-repo-server` 한 줄이 보이고 `subject`가 `system:serviceaccount:argocd:argocd-repo-server`여야 합니다. 같은 내용은 Azure Portal의 관리 ID → **Settings → Federated credentials**에서도 볼 수 있습니다.
+
+⚠️ **주의** — 주체 문자열은 `system:serviceaccount:<네임스페이스>:<서비스 계정>` 형식이며 한 글자라도 다르면 교환이 거절됩니다. 새 자격 증명이 반영되기까지 보통 수 초, 길게는 1분 정도 걸립니다. repo-server를 재시작할 필요는 없습니다. 토큰 교환은 차트를 읽을 때마다 새로 일어나기 때문입니다.
+
+💡 **이 절을 건너뛰면?** — 04에서 저장소를 연결할 때 `AADSTS70025: The client '...'(id-argocd-...) has no configured federated identity credentials` 오류로 실패합니다. ①과 ②는 갖춰졌지만 ③이 없어 Entra ID가 토큰 교환을 거절했다는 뜻입니다. 이때 3절 명령만 실행하면 Pod 재시작 없이 바로 연결됩니다.
+
+## 4. 브라우저로 Argo CD 접속
 
 👁️ **설명** — Argo CD 서버는 LoadBalancer Service로 공인 IP를 받습니다. 이 주소는 참가자 브라우저와 03의 파이프라인이 함께 씁니다. 인증서는 Argo CD가 만든 자체 서명 인증서라서 브라우저 경고가 뜨는 것이 정상입니다.
 
@@ -145,11 +181,13 @@ Remove-Variable encoded
 | 노드는 Ready인데 `argocd` Pod가 없음 | 별도 Helm 설치를 하지 마세요. 확장 `provisioningState`와 `kubectl get events -n argocd --sort-by=.lastTimestamp`를 확인합니다. |
 | `argocd-server`의 공인 IP가 계속 비어 있음 | `kubectl describe svc argocd-server -n argocd`의 이벤트. 조직 정책이 공인 IP를 막으면 관리자에게 문의합니다. |
 | 브라우저가 IP에 접속하지 못함 | 회사 네트워크의 443 아웃바운드 정책, IP를 다시 조회했는지 확인합니다. |
-| 두 client ID가 다름 | 템플릿을 다시 배포하고 `kubectl rollout status deployment/argocd-repo-server -n argocd`로 재시작을 기다립니다. |
+| 3절의 두 client ID가 다름 | 템플릿을 다시 배포하고 `kubectl rollout status deployment/argocd-repo-server -n argocd`로 재시작을 기다립니다. |
+| `federated-credential create`가 `$argocdId`를 찾지 못함 | `$argocdId`가 비어 있지 않은지 봅니다. 비어 있으면 1절 배포 이름이 `demo-infra`인지 확인합니다. |
 
 📋 **완료 체크**
 
 - [ ] 노드 2개가 Ready이고 Rollout CRD가 보입니다.
+- [ ] 관리 ID `id-argocd-<AKS 이름>`에 페더레이션 자격 증명 `argocd-repo-server`가 1개 있습니다.
 - [ ] 브라우저에서 `admin`으로 로그인했고 **Settings → Accounts**에 `ci`가 있습니다.
 
 [← 이전](01-prerequisites.md) · [목차](../README.md) · [다음: CI →](03-pipeline.md)

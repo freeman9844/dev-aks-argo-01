@@ -108,3 +108,9 @@ flowchart LR
   - Argo CD 트리에 ReplicaSet·Pod가 보이도록 AppProject 허용 종류를 보강했습니다(04).
 
 06대로 실습 그룹, AKS 노드 그룹, Argo CD 공인 IP, 파이프라인, 저장소, 서비스 연결을 삭제했습니다. 참가자의 구독 할당량·조직 정책·권한에 따라 결과가 달라질 수 있습니다.
+
+**페더레이션 분리 재검증:** 2026-11-21에 Argo CD 페더레이션 자격 증명을 Bicep에서 02 3절 CLI로 옮긴 뒤, 새 그룹에서 02를 다시 실행했습니다.
+
+- 페더레이션을 만들기 전에는 저장소 연결이 `AADSTS70025`(no configured federated identity credentials)로 실패했습니다.
+- 3절 명령을 실행하고 9초 뒤 연결이 `Successful`이 됐습니다. repo-server는 재시작하지 않았습니다.
+- ACR의 차트를 내려받아 `Service`·`Rollout` 매니페스트가 렌더링되는 것까지 확인한 뒤 그룹을 삭제했습니다.
