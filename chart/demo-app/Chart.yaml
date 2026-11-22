@@ -1,6 +1,28 @@
+# =============================================================================
+# demo-app Helm 차트
+#
+# 이 차트는 저장소에서 바로 설치하지 않습니다. CI(azure-pipelines.yml Build Job)가
+# 빌드마다 아래 순서로 "배포 가능한 차트"를 만들어 ACR(oci://<ACR>/helm/demo-app)에 올리고,
+# Argo CD가 그 차트를 읽어 AKS에 배포합니다.
+#   1. ci/set_chart_image.py가 values.yaml의 image를 방금 push한 이미지 digest로 고정
+#   2. helm package --version 1.0.<빌드 ID> --app-version <커밋 앞 7자리>
+#   3. helm push → ACR의 helm/demo-app:1.0.<빌드 ID>
+#
+# 구성 파일
+#   templates/rollout.yaml : Argo Rollouts의 Rollout(카나리 단계, Pod 정의)
+#   templates/service.yaml : 안정 버전과 카나리 Pod를 함께 묶는 ClusterIP Service
+#   values.yaml            : 아래 값만 가집니다. JSON 형식이라 주석을 넣을 수 없어 여기서 설명합니다.
+#     replicaCount     - Pod 개수(5). 카나리 20%가 Pod 1개로 딱 떨어지도록 정한 값입니다.
+#     image.repository - 이미지 주소. 저장소에는 자리표시자 example.invalid/demo-app만 있습니다.
+#     image.digest     - 이미지 digest. 저장소에는 빈 값이며, 비어 있으면 렌더링이 실패합니다.
+#                        CI가 채우기 전의 차트가 실수로 배포되지 않게 하는 안전장치입니다.
+# =============================================================================
 apiVersion: v2
 name: demo-app
 description: AKS 워크숍 데모 앱 (Argo Rollouts 카나리)
 type: application
+# 자리표시자 버전입니다. 실제 버전은 CI가 helm package --version 1.0.<빌드 ID>로 덮어씁니다.
+# Argo CD Application은 이 차트 버전(targetRevision)으로 어떤 빌드를 배포할지 고릅니다.
 version: 0.0.0
+# 자리표시자입니다. CI가 --app-version으로 커밋 앞 7자리를 넣어 차트가 어느 소스에서 왔는지 남깁니다.
 appVersion: "unpublished"

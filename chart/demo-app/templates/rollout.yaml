@@ -1,9 +1,19 @@
+{{- /*
+Deployment 대신 Argo Rollouts의 Rollout을 씁니다. Pod 정의(template)는 Deployment와 같고,
+새 버전을 어떤 순서로 내보낼지(strategy)만 Rollouts 컨트롤러(02에서 설치)가 처리합니다.
+이 파일의 주석은 Helm 템플릿 주석이라 렌더링된 매니페스트에는 남지 않습니다.
+*/ -}}
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
   name: demo-app
 spec:
+  {{- /* 전체 Pod 개수(values.yaml의 replicaCount = 5). */}}
   replicas: {{ .Values.replicaCount }}
+  {{- /*
+  최근 3개 버전 안으로 되돌릴 때는 아래 카나리 단계를 건너뛰고 바로 전체를 교체합니다.
+  05에서 Argo CD History로 Rollback하면 정지 없이 v1 5개로 돌아가는 이유입니다.
+  */}}
   rollbackWindow:
     revisions: 3
   selector:
@@ -11,6 +21,15 @@ spec:
       app: demo-app
   strategy:
     canary:
+      {{- /*
+      트래픽 라우터(Ingress, 서비스 메시)를 쓰지 않으므로 비율은 "Pod 개수 비율"로 맞춥니다.
+      요청이 정확히 20%로 나뉘는 것이 아니라, 같은 Service 뒤에 새 Pod가 1/5 섞이는 방식입니다.
+        1단계 setWeight: 20  - 새 버전 Pod를 20%(5개 중 1개) 띄웁니다. 나머지 4개는 이전 버전입니다.
+        2단계 pause: {}      - 시간을 지정하지 않은 정지. 사람이 승격(UI Resume 또는
+                               kubectl argo rollouts promote)할 때까지 멈춥니다.
+                               이때 Suspended(Paused)는 장애가 아니라 의도한 상태입니다.
+        3단계 setWeight: 100 - 승격되면 새 버전을 100%로 늘리고 이전 버전 Pod를 정리합니다.
+      */}}
       steps:
         - setWeight: 20
         - pause: {}
@@ -18,17 +37,27 @@ spec:
   template:
     metadata:
       labels:
+        {{- /* Service와 Rollout selector가 이 라벨로 Pod를 찾습니다. 안정·카나리 Pod 모두 같은 라벨입니다. */}}
         app: demo-app
     spec:
       containers:
         - name: demo-app
+          {{- /*
+          태그 대신 digest로 고정한 이미지(<repository>@sha256:...)를 씁니다.
+          digest가 비어 있으면(CI를 거치지 않은 차트) 렌더링을 실패시켜 잘못된 배포를 막습니다.
+          */}}
           image: {{ .Values.image.repository }}@{{ required "image.digest is required" .Values.image.digest }}
           ports:
             - containerPort: 8080
+          {{- /* 앱의 /version 응답이 성공해야 Ready로 봅니다. 카나리는 새 Pod가 Ready가 되어야 다음 단계로 진행합니다. */}}
           readinessProbe:
             httpGet:
               path: /version
               port: 8080
+          {{- /*
+          노드 2대에 Argo CD, Rollouts와 함께 Pod 5개(카나리 중에도 v1 4개 + v2 1개)가 여유 있게 올라가도록 작게 잡았습니다.
+          CPU limit은 두지 않아 스로틀링을 피하고, 메모리 limit으로 과도한 사용만 막습니다.
+          */}}
           resources:
             requests:
               cpu: 25m

@@ -1,3 +1,9 @@
+{{- /*
+클러스터 내부용 Service(ClusterIP)입니다. 외부 공개용 IP는 만들지 않습니다.
+selector가 app: demo-app 라벨만 보므로 이전 버전(stable)과 새 버전(canary) Pod가 모두 엔드포인트가 됩니다.
+그래서 카나리 중에는 요청이 Pod 개수 비율(4:1)에 가깝게 두 버전으로 나뉩니다.
+이 파일의 주석은 Helm 템플릿 주석이라 렌더링된 매니페스트에는 남지 않습니다.
+*/ -}}
 apiVersion: v1
 kind: Service
 metadata:
@@ -6,5 +12,6 @@ spec:
   selector:
     app: demo-app
   ports:
+    {{- /* Service 포트 80으로 받아 컨테이너의 8080으로 전달합니다. */}}
     - port: 80
       targetPort: 8080
